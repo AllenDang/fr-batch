@@ -7,7 +7,7 @@ import { sleep } from "./resilience.ts";
 import { LOG_TAIL_LINES, describeLive, drivers, elapsedLabel, finishedRuns, lastLogLine } from "./state.ts";
 import type { LiveDriver } from "./state.ts";
 import { RUNLOCK_TOUCH_MS, touchRunlock } from "./store.ts";
-import type { Log } from "./types.ts";
+import type { ItemKind, Log } from "./types.ts";
 
 /**
  * How long `run` waits before detaching. A refusal (disarmed queue, dirty tree, held
@@ -65,7 +65,7 @@ export function finishDriver(pi: ExtensionAPI, ctx: ExtensionContext, cwd: strin
   }
 }
 
-export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts: { only?: string; answer?: string }): Promise<string> {
+export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts: { only?: string; answer?: string; kind?: ItemKind }): Promise<string> {
   const cwd = ctx.cwd;
   const running = drivers.get(cwd);
   if (running) {
@@ -84,6 +84,7 @@ export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts:
     hardStopped: false,
     detached: false,
     only: opts.only,
+    kind: opts.kind,
     lines: [],
     settled: Promise.resolve(),
     touch: undefined,
@@ -99,7 +100,7 @@ export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts:
   d.settled = runBatch(
     pi,
     ctx,
-    { signal: d.abort.signal, only: opts.only, answer: opts.answer, background: true, shouldStop: () => d.stopRequested },
+    { signal: d.abort.signal, only: opts.only, kind: opts.kind, answer: opts.answer, background: true, shouldStop: () => d.stopRequested },
     log,
   )
     .then(

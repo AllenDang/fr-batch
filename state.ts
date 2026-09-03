@@ -1,3 +1,5 @@
+import type { ItemKind } from "./types.ts";
+
 /** Log tail kept in memory for `status`. The durable record is progress.json, not this. */
 export const LOG_TAIL_LINES = 40;
 
@@ -33,6 +35,8 @@ export interface LiveDriver {
   /** False while the starting tool call still holds the result; true once it has detached. */
   detached: boolean;
   only?: string;
+  /** Which pipeline is live, so two projects' status lines are distinguishable. */
+  kind?: ItemKind;
   /** Tail of the driver's own log, for `status`. progress.json remains the durable record. */
   lines: string[];
   settled: Promise<void>;
@@ -66,5 +70,6 @@ export function lastLogLine(d: LiveDriver): string {
 
 export function describeLive(d: LiveDriver): string {
   const state = d.hardStopped ? "hard-stopping" : d.stopRequested ? "stopping at the next phase boundary" : "running";
-  return `${state} for ${elapsedLabel(Date.now() - d.startedAt)}${d.only ? ` (only: ${d.only})` : ""} — ${lastLogLine(d)}`;
+  const scope = d.only ? ` (only: ${d.only})` : d.kind && d.kind !== "fr" ? ` (kind: ${d.kind})` : "";
+  return `${state} for ${elapsedLabel(Date.now() - d.startedAt)}${scope} — ${lastLogLine(d)}`;
 }

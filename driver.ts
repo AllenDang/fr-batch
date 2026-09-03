@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runBugItem } from "./bug_pipeline.ts";
 import { childSpawnParams, effortUndeliverable, itemModelLabel, modelLabel, resolveChildConfig, sessionChildConfig } from "./config.ts";
 import { AUDIT_PARSE_RETRIES, freezeContract, loadLedger, parseFixReport, parseVerdict, partitionGaps, planTestGate, recordOutOfScope, saveLedger } from "./contract.ts";
 import { contractPath, ledgerPath, queuePath, runlockPath } from "./paths.ts";
@@ -8,9 +9,9 @@ import { auditTask, fixTask, implementTask, readsBlock, rulesBlock } from "./pro
 import { INTERCOM_DETACH_MARK, NetworkPause, formatAsk, runChildResilient } from "./resilience.ts";
 import { makeRpc } from "./rpc.ts";
 import type { ChildOutcome } from "./rpc.ts";
-import { acquireRunlock, artifactDir, loadProgress, loadQueue, pruneItemArtifacts, setProgress, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
-import { AUDIT_SCHEMA, CHILD_ROLES, FIX_SCHEMA, UNPARSEABLE_GAP_ID } from "./types.ts";
-import type { AuditVerdict, ChildConfig, ChildRole, Ledger, LedgerEntry, Log, Phase, Progress } from "./types.ts";
+import { acquireRunlock, artifactDir, kindOf, loadProgress, loadQueue, pruneItemArtifacts, setProgress, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
+import { AUDIT_SCHEMA, CHILD_ROLES, FIX_SCHEMA, UNPARSEABLE_GAP_ID, isDone } from "./types.ts";
+import type { AuditVerdict, ChildConfig, ChildRole, ItemKind, Ledger, LedgerEntry, Log, Phase, Progress, QueueItem } from "./types.ts";
 
 /** Rows a dry run prints before it starts counting instead of listing. */
 export const DRYRUN_ROWS = 20;
@@ -77,6 +78,8 @@ export async function runBatch(
   opts: {
     signal?: AbortSignal;
     only?: string;
+    /** Which pipeline to drive. Absent means "fr", so an existing caller is unchanged. */
+    kind?: ItemKind;
     dryRun?: boolean;
     answer?: string;
     /**
@@ -104,11 +107,20 @@ export async function runBatch(
   // that STARTED the run, or two children of one item silently disagree.
   const session = sessionChildConfig(ctx);
 
+  /**
+   * Which pipeline this run drives. One kind per invocation, and the reason is one-writer-per-tree:
+   * two pipelines alternating in the same working tree means one item's `git add -A` can swallow
+   * the other's half-finished state. `opts.only` overrides it — an explicit id is unambiguous, and
+   * without that override every `continue` / `reset` command a bug item's own messages print would
+   * filter that item out and report "finished. 0 of 0".
+   */
+  const inScope = (i: QueueItem): boolean => (opts.only ? i.id === opts.only : kindOf(i) === (opts.kind ?? "fr"));
+
   if (opts.dryRun) {
     const q = loadQueue(cwd);
     const progress = loadProgress(cwd);
-    const todo = q.items.filter((i) => statusOf(progress, i.id) !== "committed" && (!opts.only || i.id === opts.only));
-    if (todo.length === 0) return "fr-batch: nothing to do — every queued item is committed.";
+    const todo = q.items.filter((i) => !isDone(statusOf(progress, i.id)) && inScope(i));
+    if (todo.length === 0) return `fr-batch: nothing to do — every kind:"${opts.kind ?? "fr"}" item is committed or skipped.`;
     // Capped for the same reason `status` is: a long queue's dry run is read to check the
     // NEXT few items and the config, never to re-read row 200.
     const shown = todo.slice(0, DRYRUN_ROWS);
@@ -116,7 +128,7 @@ export async function runBatch(
       `fr-batch: dry run — ${todo.length} item(s) would run, in this order${shown.length < todo.length ? ` (first ${shown.length} shown)` : ""}:`,
       ...shown.map((i, n) => {
         const v = verifyFor(q, i);
-        return `  ${n + 1}. ${i.id}  [${statusOf(progress, i.id)}]  ${i.plan}  verify:${v.isDefault ? "default" : `${v.cmds.length} cmd(s)`}  model:${itemModelLabel(q, i, session)}`;
+        return `  ${n + 1}. ${i.id}  [${statusOf(progress, i.id)}]  ${kindOf(i) === "bug" ? "bug " : ""}${i.plan}  verify:${v.isDefault ? "default" : `${v.cmds.length} cmd(s)`}  model:${itemModelLabel(q, i, session)}`;
       }),
       ...(shown.length < todo.length ? [`  ⋯ ${todo.length - shown.length} more, ending at ${todo[todo.length - 1].id}`] : []),
       "",
@@ -144,7 +156,16 @@ export async function runBatch(
   {
     const q0 = loadQueue(cwd);
     const p0 = loadProgress(cwd);
-    const next = q0.items.filter((i) => !opts.only || i.id === opts.only).find((i) => statusOf(p0, i.id) !== "committed");
+    // THE SAME TWO PREDICATES AS THE LOOP BELOW, and both halves are load-bearing.
+    //
+    // `inScope`: without it, an item of the OTHER kind that is paused or blocked becomes `next`,
+    // `nextStatus` is not "pending", the dirty-tree refusal is skipped, and this run's first item
+    // implements over that item's abandoned edits — which `git add -A` then commits under this
+    // item's message. Symmetrically, an other-kind item legitimately resuming gets refused.
+    //
+    // `isDone`: a `skipped` item is at rest but is not "committed", so a `!== "committed"` find
+    // stops on it and reports its status as `nextStatus`, skipping the refusal the same way.
+    const next = q0.items.filter(inScope).find((i) => !isDone(statusOf(p0, i.id)));
     const nextStatus = next ? statusOf(p0, next.id) : "pending";
     if (nextStatus === "pending") {
       const status0 = await pi.exec("git", ["status", "--porcelain"], { cwd });
@@ -245,11 +266,16 @@ export async function runBatch(
       }
 
       const progress = loadProgress(cwd);
-      const candidates = q.items.filter((i) => !opts.only || i.id === opts.only);
-      const item = candidates.find((i) => statusOf(progress, i.id) !== "committed");
+      const candidates = q.items.filter(inScope);
+      const item = candidates.find((i) => !isDone(statusOf(progress, i.id)));
       if (!item) {
         const total = candidates.length;
-        return `fr-batch: finished. ${committed} item(s) committed this run; ${total} of ${total} queued item(s) are committed.`;
+        const skipped = candidates.filter((i) => statusOf(progress, i.id) === "skipped").length;
+        const kindLabel = opts.only ? `matching only:"${opts.only}"` : `kind:"${opts.kind ?? "fr"}"`;
+        return (
+          `fr-batch: finished. ${committed} item(s) committed this run; ` +
+          `${total - skipped} of ${total} ${kindLabel} item(s) are committed${skipped ? `, ${skipped} skipped` : ""}.`
+        );
       }
       if (statusOf(progress, item.id) === "blocked" && (progress[item.id]?.note ?? "").length > 0) {
         return [
@@ -328,7 +354,10 @@ export async function runBatch(
 
       // Pre-flight: a PLAN with no test matrix is refused BEFORE any child is spawned. Once the
       // contract is frozen the freeze is the authority, so this only gates a fresh item.
-      if (!existsSync(contractPath(cwd, item.id))) {
+      // FR ONLY: a bug item's spec is a report plus an already-red pin, and it has its own
+      // pre-flight inside runBugItem — running this one would block every bug item for lacking a
+      // test matrix it is not supposed to have.
+      if (kindOf(item) === "fr" && !existsSync(contractPath(cwd, item.id))) {
         const gate = await planTestGate(pi, cwd, item);
         if (!gate.ok) return block(gate.why);
       }
@@ -485,6 +514,49 @@ export async function runBatch(
         };
       };
 
+      // ---- kind:"bug" takes the whole per-item pipeline -------------------
+      //
+      // Shared by both pipelines so the commit block can report it.
+      let round = fixRoundsSoFar;
+      //
+      // Dispatch follows THE ITEM'S kind, never `opts.kind`. Those are different questions:
+      // `opts.kind` chose which items this run considers, and `only` overrides it — so an
+      // `only:"<bug id>"` run started by that item's own `continue` command arrives here with
+      // `opts.kind === "fr"` and must still get the bug pipeline.
+      if (kindOf(item) === "bug") {
+        const r = await runBugItem({
+          pi,
+          rpc,
+          cwd,
+          item,
+          q,
+          log,
+          dir,
+          policy,
+          quotaPolicy,
+          signal: opts.signal,
+          fixRoundsSoFar,
+          spawnFor,
+          block,
+          handlePause,
+          pausedReturn,
+          abortStop,
+          decisionStop,
+          resumeFor,
+          stopNow,
+          // Passed rather than imported: this file must import bug_pipeline.ts, so the reverse edge
+          // would be a cycle probe_modules.ts fails the suite on. Neither is a closure — they are
+          // module-level exports here — but moving them to a leaf would make mutation.mjs's
+          // childOutcomeFailure row match nothing and exit 1.
+          runVerify,
+          childOutcomeFailure,
+        });
+        if (r.outcome === "return") return r.text;
+        if (r.outcome === "skipped") continue;
+        round = r.rounds;
+        // falls through to the shared commit block
+      } else {
+
       // ---- 1. implement (skip if a previous run already got past it) ------
       if (st === "pending" || st === "implementing" || (wasPaused && pausedPhase === "implement")) {
         setProgress(cwd, item.id, { status: "implementing" });
@@ -530,7 +602,7 @@ export async function runBatch(
       const { cmds: verifyCmds, isDefault } = verifyFor(q, item);
       if (isDefault) log(`  (using queue.defaultVerify — ${verifyCmds.length} cmd(s))`);
 
-      let round = fixRoundsSoFar;
+      round = fixRoundsSoFar;
       // Frozen before the first audit and reused for every round after it. This is the
       // whole convergence mechanism: the checklist cannot grow while it is being audited.
       const contract = await freezeContract(pi, cwd, item, log);
@@ -832,6 +904,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           }
         }
       }
+      } // end of the FR branch
 
       // ---- 4. commit -----------------------------------------------------
       log("  commit…");

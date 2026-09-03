@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const PROBES = ["probe_modules.ts", "probe_install.ts", "probe_audit2.ts", "probe_channel.ts", "probe_batch.ts", "probe_config.ts", "probe_driver.ts", "probe_scale.ts"];
+const PROBES = ["probe_modules.ts", "probe_install.ts", "probe_audit2.ts", "probe_channel.ts", "probe_batch.ts", "probe_config.ts", "probe_driver.ts", "probe_scale.ts", "probe_bug.ts"];
 
 let failed = 0;
 for (const p of PROBES) {

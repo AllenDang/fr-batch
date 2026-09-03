@@ -54,7 +54,7 @@ const driverSrc = SPAWN_SOURCES.filter((f) => existsSync(join(root, f)))
   .map((f) => readFileSync(join(root, f), "utf8"))
   .join("\n");
 const spawnedAgents = [...new Set([...driverSrc.matchAll(/agent:\s*"([^"]+)"/g)].map((m) => m[1]))].sort();
-ok("the driver spawns a known set of agents", spawnedAgents.length === 3, spawnedAgents.join(", "));
+ok("the driver spawns a known set of agents", spawnedAgents.length === 5, spawnedAgents.join(", "));
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   pi?: { subagents?: { agents?: string[] } };

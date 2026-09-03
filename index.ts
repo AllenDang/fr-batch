@@ -10,7 +10,7 @@ import { addItem, archiveItems, removeItem, resetItem } from "./queue_ops.ts";
 import { HISTORY_ROWS, renderHistory, renderStatus } from "./render.ts";
 import { CHILD_ASK_TIMEOUT_MS } from "./resilience.ts";
 import { drivers } from "./state.ts";
-import { THINKING_EFFORTS } from "./types.ts";
+import { ITEM_KINDS, THINKING_EFFORTS } from "./types.ts";
 import type { Log } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,12 @@ export default function (pi: ExtensionAPI) {
           description: "run: restrict to this item id. remove/reset/archive: the target id. status/history: show that one item in full.",
         }),
       ),
+      kind: Type.Optional(
+        StringEnum(ITEM_KINDS, {
+          description:
+            'run: which pipeline to drive. "fr" (default) implements FR PLANs; "bug" drives an existing red test fixture to green. One kind per run — two pipelines in one working tree would let one item\'s commit swallow the other\'s half-finished state.',
+        }),
+      ),
       all: Type.Optional(
         Type.Boolean({
           description: "status: list every queue row instead of the summary (in-flight + next 3 pending). Costs one line per item.",
@@ -125,6 +131,12 @@ export default function (pi: ExtensionAPI) {
       ),
       plan: Type.Optional(Type.String({ description: 'add: repo-relative path to the *_PLAN.md.' })),
       id: Type.Optional(Type.String({ description: "add: queue id. Derived from the plan filename when omitted." })),
+      fixture: Type.Optional(
+        Type.String({
+          description:
+            'add: kind:"bug" only. The path (or runner token) the pin lives at. Defaults to the plan\'s own directory, which is right when the report sits beside its fixture and wrong when it does not.',
+        }),
+      ),
       fr: Type.Optional(Type.String({ description: "add: the companion FR doc. Derived by dropping _PLAN when omitted." })),
       reads: Type.Optional(Type.Array(Type.String(), { description: "add: extra docs every child must read (e.g. a batch OVERVIEW)." })),
       verify: Type.Optional(
@@ -175,6 +187,8 @@ export default function (pi: ExtensionAPI) {
               addItem(ctx.cwd, {
                 plan: params.plan,
                 id: params.id,
+                kind: params.kind,
+                fixture: params.fixture,
                 fr: params.fr,
                 reads: params.reads,
                 verify: params.verify,
@@ -201,7 +215,7 @@ export default function (pi: ExtensionAPI) {
             // run / continue. The batch is NOT awaited here: awaiting it would hold this turn
             // open for hours, and pi only delivers queued user messages between turns — so the
             // operator could neither inspect, extend nor stop the batch they just started.
-            return text(await startDriver(pi, ctx, { only: params.only, answer: params.answer }));
+            return text(await startDriver(pi, ctx, { only: params.only, kind: params.kind, answer: params.answer }));
         }
       } catch (e) {
         return text(`${lines.join("\n")}\n\nfr-batch error: ${(e as Error).message}`.trim(), true);
@@ -210,13 +224,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("fr-batch", {
-    description: "FR PLAN batch: /fr-batch [status|all|plan|run|stop|archive|history]",
+    description: "FR PLAN batch: /fr-batch [status|all|plan|run|run-bug|stop|archive|history]",
     getArgumentCompletions: (prefix: string) => {
       const items = [
         { value: "status", label: "status — summary: in-flight + next pending + driver" },
         { value: "all", label: "all — status with every queue row" },
         { value: "plan", label: "plan — dry run" },
         { value: "run", label: "run — start the background driver (needs armed: true)" },
+        { value: "run-bug", label: 'run-bug — same, for kind:"bug" items' },
         { value: "stop", label: "stop — end the background driver" },
         { value: "archive", label: "archive — sweep committed items into history.jsonl" },
         { value: "history", label: "history — list archived items, newest first" },
@@ -232,13 +247,14 @@ export default function (pi: ExtensionAPI) {
         if (arg === "history") return void ctx.ui.notify(renderHistory(ctx.cwd, undefined, HISTORY_ROWS), "info");
         if (arg === "plan") return void ctx.ui.notify(await runBatch(pi, ctx, { dryRun: true }, () => {}), "info");
         if (arg === "stop") return void ctx.ui.notify(stopDriver(pi, ctx.cwd), "info");
+        if (arg === "run-bug") return void ctx.ui.notify(await startDriver(pi, ctx, { kind: "bug" }), "info");
         if (arg === "run") {
           // Started right here rather than handed to the agent. The old indirection existed to
           // borrow the turn's abort signal and streaming card; the background driver has its
           // own stop and its own status, so a command can own the run directly.
           return void ctx.ui.notify(await startDriver(pi, ctx, {}), "info");
         }
-        ctx.ui.notify(`fr-batch: unknown argument "${arg}". Use status | all | plan | run | stop | archive | history.`, "warning");
+        ctx.ui.notify(`fr-batch: unknown argument "${arg}". Use status | all | plan | run | run-bug | stop | archive | history.`, "warning");
       } catch (e) {
         ctx.ui.notify(`fr-batch: ${(e as Error).message}`, "error");
       }

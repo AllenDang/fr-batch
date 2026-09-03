@@ -354,7 +354,18 @@ export function pruneItemArtifacts(cwd: string, id: string, log: Log): void {
     return /^\d+$/.test(mid) ? Number(mid) : -1;
   };
   const lastVerdict = files.filter((f) => roundOf(f) >= 0).sort((a, b) => roundOf(a) - roundOf(b)).pop();
-  const keep = new Set([lastVerdict, `${id}-implement.md`].filter(Boolean) as string[]);
+  // The bug pipeline produces neither an implement report nor an audit verdict, so without its own
+  // keep entry every bug-fix report would be deleted at commit — and that report is the only record
+  // of what the fixer changed and why. Same prefix+digits+suffix scheme, which collides with
+  // nothing else generated (`-implement.md`, `-fix-verify-N.md`, `-audit-N.json`, `-fix-audit-N.json`).
+  const bugRoundOf = (f: string): number => {
+    const head = `${id}-bugfix-`;
+    if (!f.startsWith(head) || !f.endsWith(".md")) return -1;
+    const mid = f.slice(head.length, -".md".length);
+    return /^\d+$/.test(mid) ? Number(mid) : -1;
+  };
+  const lastBugfix = files.filter((f) => bugRoundOf(f) >= 0).sort((a, b) => bugRoundOf(a) - bugRoundOf(b)).pop();
+  const keep = new Set([lastVerdict, lastBugfix, `${id}-implement.md`, `${id}-scope.md`].filter(Boolean) as string[]);
   let freed = 0;
   for (const f of files) {
     if (keep.has(f)) continue;
