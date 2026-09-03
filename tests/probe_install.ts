@@ -45,7 +45,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // ---------------------------------------------------------------------------
 // 1 + 2. the agents the driver spawns are shipped, and declared
 // ---------------------------------------------------------------------------
-const driverSrc = readFileSync(join(root, "driver.ts"), "utf8");
+// Scanned across EVERY module that spawns, not just driver.ts. The bug pipeline lives in its own
+// file, and a scan of driver.ts alone would both fail the count and — worse — leave the new agents
+// out of the shipped-file loop below, so deleting one of their definitions would fail nothing.
+// existsSync-guarded so this file still runs at a commit where bug_pipeline.ts does not exist yet.
+const SPAWN_SOURCES = ["driver.ts", "bug_pipeline.ts"];
+const driverSrc = SPAWN_SOURCES.filter((f) => existsSync(join(root, f)))
+  .map((f) => readFileSync(join(root, f), "utf8"))
+  .join("\n");
 const spawnedAgents = [...new Set([...driverSrc.matchAll(/agent:\s*"([^"]+)"/g)].map((m) => m[1]))].sort();
 ok("the driver spawns a known set of agents", spawnedAgents.length === 3, spawnedAgents.join(", "));
 
@@ -94,6 +101,13 @@ const frontmatterOf = (text: string): Record<string, string> => {
 };
 const toolsOf = (fm: Record<string, string>) => (fm.tools ?? "").split(",").map((t) => t.trim()).filter(Boolean);
 
+/**
+ * Agents that must NOT carry write tools. A critic that can quietly fix what it reports is not a
+ * critic — fr-test-auditor's verdict and fr-bug-scoper's sibling list are both worthless if the
+ * child can make its own findings disappear.
+ */
+const READ_ONLY_AGENTS = new Set(["fr-test-auditor", "fr-bug-scoper"]);
+
 for (const [name, text] of shipped) {
   const fm = frontmatterOf(text);
   const tools = toolsOf(fm);
@@ -110,7 +124,10 @@ for (const [name, text] of shipped) {
   ok(`${name} is taught the need_decision protocol`, /need_decision/.test(text));
   ok(`${name} is told never to commit`, /never commit|MUST NOT modify any file/i.test(text));
 
-  const writer = name !== "fr-test-auditor";
+  // A SET, not a comparison against one name. `name !== "fr-test-auditor"` DEMANDED edit+write of
+  // every other shipped agent, so a second read-only critic could not be added without failing an
+  // assertion that looks unrelated to it.
+  const writer = !READ_ONLY_AGENTS.has(name);
   ok(
     `${name} ${writer ? "can write" : "cannot write"}`,
     writer === (tools.includes("edit") && tools.includes("write")),
