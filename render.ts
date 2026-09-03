@@ -5,6 +5,7 @@ import { extractTestsSection, loadLedger } from "./contract.ts";
 import { contractPath, historyPath, itemStateFiles, outOfScopePath, progressPath, queuePath, runlockPath } from "./paths.ts";
 import { describeLive, drivers, elapsedLabel, finishedRuns } from "./state.ts";
 import { countHistory, loadHistory, loadProgress, loadQueue, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
+import { isDone } from "./types.ts";
 import type { ChildConfig, ItemStatus, Progress, Queue, QueueItem } from "./types.ts";
 
 /** Default number of archived items `history` lists, newest first. */
@@ -124,7 +125,7 @@ export function renderItemDetail(cwd: string, id: string, session: ChildConfig):
     ...v.cmds.map((c) => `           ${c}`),
     `model:     ${itemModelLabel(q, item, session)}`,
     ...(gaps.length > 0 ? [`gaps:      ${gaps.length} adjudicated, ${open.length} open${open.length ? ` (${open.map(([k]) => k).join(", ")})` : ""}`] : []),
-    `state:     ${itemStateFiles(cwd, id).filter((f) => existsSync(f)).length}/3 file(s) present in .pi/fr-batch/`,
+    `state:     ${itemStateFiles(cwd, id).filter((f) => existsSync(f)).length}/${itemStateFiles(cwd, id).length} file(s) present in .pi/fr-batch/`,
     ...(p?.pendingAsk ? ["", "pending question (verbatim):", p.pendingAsk] : []),
     ...(p?.note ? ["", "note:", ...p.note.split("\n").map((l) => `  ${l}`)] : []),
   ].join("\n");
@@ -197,7 +198,9 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
   const isShown = (i: QueueItem): boolean => {
     if (view.all) return true;
     const s = statusOf(progress, i.id);
-    if (s === "committed") return false;
+    // `skipped` folds with `committed`: both are at rest, and an unfolded skipped row would make the
+    // summary grow with the queue again, which is the one property this view exists to keep.
+    if (isDone(s)) return false;
     if (s === "pending") return previewPending.has(i.id);
     return true;
   };
@@ -221,13 +224,17 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
       return;
     }
     flush();
-    const mark = s === "committed" ? "✓" : s === "blocked" ? "✗" : s === "paused" ? "⏸" : s === "pending" ? " " : "…";
+    // `skipped` gets its own glyph rather than falling into the in-flight `…`: an item the driver
+    // decided needs no work must not read as one it is working on. probe_scale.ts's row regex
+    // carries the same glyph class, so both move together or its row count silently goes to 0.
+    const mark = s === "committed" ? "✓" : s === "skipped" ? "○" : s === "blocked" ? "✗" : s === "paused" ? "⏸" : s === "pending" ? " " : "…";
     const note = (s === "blocked" || s === "paused") && progress[i.id]?.note ? `\n         ${progress[i.id]!.note!.split("\n")[0]}` : "";
     rows.push(`  ${mark} ${String(n + 1).padStart(2)}. ${i.id.padEnd(24)} ${s.padEnd(13)} ${itemChips(q, i, progress, session, baselineModel, cwd)}${note}`);
   });
   flush();
 
   const done = q.items.filter((i) => statusOf(progress, i.id) === "committed").length;
+  const skipped = q.items.filter((i) => statusOf(progress, i.id) === "skipped").length;
   const paused = q.items.filter((i) => statusOf(progress, i.id) === "paused");
   const waiting = paused.filter((i) => progress[i.id]?.pauseKind === "decision");
   const stopped = paused.filter((i) => progress[i.id]?.pauseKind === "stopped");
@@ -237,7 +244,7 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
   const pol = transientPolicy(q);
   const qpol = transientQuotaPolicy(q);
   return [
-    `fr-batch — armed: ${q.armed} · maxFixRounds: ${q.maxFixRounds} · ${done}/${q.items.length} committed${archived ? ` · ${archived} archived` : ""}`,
+    `fr-batch — armed: ${q.armed} · maxFixRounds: ${q.maxFixRounds} · ${done}/${q.items.length} committed${skipped ? `, ${skipped} skipped` : ""}${archived ? ` · ${archived} archived` : ""}`,
     `model: ${baselineModel}${session.model ? ` · session inherit: ${modelLabel(session)}` : " · session model unknown"}`,
     ...(live
       ? [`driver: ${describeLive(live)}`]

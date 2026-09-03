@@ -2,8 +2,8 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { dirname, join } from "node:path";
 import { assertChildConfig, assertRoleConfigs } from "./config.ts";
 import { baseDir, historyPath, progressPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
-import { QUEUE_BUDGET_DEFAULTS, TRANSIENT_DEFAULTS, TRANSIENT_QUOTA_DEFAULTS } from "./types.ts";
-import type { HistoryEntry, ItemStatus, Log, Progress, ProgressEntry, Queue, QueueItem, TransientPolicy } from "./types.ts";
+import { BUG_PROTOCOL_DEFAULTS, ITEM_KINDS, QUEUE_BUDGET_DEFAULTS, TRANSIENT_DEFAULTS, TRANSIENT_QUOTA_DEFAULTS } from "./types.ts";
+import type { BugProtocol, HistoryEntry, ItemKind, ItemStatus, Log, Progress, ProgressEntry, Queue, QueueItem, TransientPolicy } from "./types.ts";
 
 export const STALE_RUNLOCK_MS = 15 * 60 * 1000;
 
@@ -57,8 +57,114 @@ export function loadQueue(cwd: string): Queue {
     seen.add(item.id);
     assertChildConfig(`item "${item.id}"`, { model: item.model, thinking: item.thinking });
     assertRoleConfigs(`item "${item.id}".roles`, item.roles);
+    assertItemKind(item);
+  }
+  // Refused HERE rather than at first use: an item that names a pipeline with no protocol behind it
+  // would otherwise load clean and die several phases in, after a child had already edited the tree.
+  for (const item of q.items) {
+    if (kindOf(item) === "bug") assertBugProtocol(q, item);
   }
   return q;
+}
+
+/** An item's pipeline. Absent means "fr", which is what keeps every pre-existing queue working. */
+export function kindOf(item: QueueItem): ItemKind {
+  return item.kind ?? "fr";
+}
+
+function assertItemKind(item: QueueItem): void {
+  if (item.kind !== undefined && !ITEM_KINDS.includes(item.kind)) {
+    throw new Error(`fr-batch: item "${item.id}" has kind "${String(item.kind)}" — only ${ITEM_KINDS.join(", ")} are pipelines`);
+  }
+  if (kindOf(item) !== "bug") {
+    if (item.fixture !== undefined) throw new Error(`fr-batch: item "${item.id}" sets fixture but is not kind:"bug"`);
+    if (item.bugProtocol !== undefined) throw new Error(`fr-batch: item "${item.id}" sets bugProtocol but is not kind:"bug"`);
+    return;
+  }
+  // `fr` is refused on a bug item because prompts.ts's frFor() SHORT-CIRCUITS on it: with `fr` set,
+  // readsBlock hands the child a companion doc that a bug report does not have, and for a report
+  // named `FIX_x_PLAN.md` the `_PLAN.md` derivation invents one that does not exist.
+  if (item.fr !== undefined) {
+    throw new Error(`fr-batch: item "${item.id}" is kind:"bug" and must not set fr — a bug report has no companion FR doc`);
+  }
+  if (item.fixture !== undefined && !item.fixture.trim()) {
+    throw new Error(`fr-batch: item "${item.id}" fixture must be a non-empty string, or omitted to derive it from plan`);
+  }
+}
+
+/**
+ * The resolved protocol for one bug item: item over queue over defaults, FIELD BY FIELD.
+ *
+ * Per-field so an item can override just its `run`, or just unset `results`, without restating a
+ * protocol its 171 siblings share — the same layering `verifyFor` gives `verify`/`defaultVerify`.
+ */
+export function bugProtocolFor(q: Queue, item: QueueItem): BugProtocol {
+  const merged = { ...BUG_PROTOCOL_DEFAULTS, results: null as string | null, run: [] as string[], ...(q.bugProtocol ?? {}), ...(item.bugProtocol ?? {}) };
+  return {
+    run: merged.run,
+    // `null` is a VALUE here, not "absent": it is how a layer says "this repo has no per-scenario
+    // sink". `??` would fall back through it and re-inherit the outer path, which is the bug this
+    // sentinel exists to prevent.
+    results: merged.results,
+    nameField: merged.nameField,
+    passField: merged.passField,
+    redExit: merged.redExit,
+    greenExit: merged.greenExit,
+    invalidExit: merged.invalidExit,
+    pinPaths: merged.pinPaths,
+    requirePin: merged.requirePin,
+    pinPattern: merged.pinPattern,
+    requireMechanismTouch: merged.requireMechanismTouch,
+  };
+}
+
+function assertBugProtocol(q: Queue, item: QueueItem): void {
+  const where = `item "${item.id}"`;
+  if (q.bugProtocol === undefined && item.bugProtocol === undefined) {
+    throw new Error(
+      `fr-batch: ${where} is kind:"bug" but neither queue.bugProtocol nor its own bugProtocol is set. ` +
+        `A bug item needs at least a \`run\` command — this driver knows no build system, so the protocol comes from this repo.`,
+    );
+  }
+  const p = bugProtocolFor(q, item);
+  if (!Array.isArray(p.run) || p.run.length === 0 || p.run.some((c) => typeof c !== "string" || !c.trim())) {
+    throw new Error(`fr-batch: ${where} bugProtocol.run must be a non-empty array of non-empty commands — an empty runner reports every fixture green`);
+  }
+  if (p.results !== null && (typeof p.results !== "string" || !p.results.trim())) {
+    throw new Error(`fr-batch: ${where} bugProtocol.results must be a non-empty string, or null for an exit-code-only pin`);
+  }
+  for (const f of ["nameField", "passField"] as const) {
+    if (typeof p[f] !== "string" || !p[f].trim()) throw new Error(`fr-batch: ${where} bugProtocol.${f} must be a non-empty string`);
+  }
+  const seenExit = new Map<number, string>();
+  for (const f of ["redExit", "greenExit", "invalidExit"] as const) {
+    const codes = p[f];
+    if (!Array.isArray(codes) || codes.length === 0 || codes.some((c) => !Number.isInteger(c))) {
+      throw new Error(`fr-batch: ${where} bugProtocol.${f} must be a non-empty array of integer exit codes`);
+    }
+    for (const c of codes) {
+      const prior = seenExit.get(c);
+      // Disjoint or one exit code carries two verdicts, and which one wins would be an accident of
+      // evaluation order rather than a decision anyone made.
+      if (prior && prior !== f) throw new Error(`fr-batch: ${where} bugProtocol exit code ${c} is in both ${prior} and ${f} — the sets must be disjoint`);
+      seenExit.set(c, f);
+    }
+  }
+  if (!Array.isArray(p.pinPaths) || p.pinPaths.length === 0 || p.pinPaths.some((s) => typeof s !== "string" || !s.trim())) {
+    throw new Error(
+      `fr-batch: ${where} bugProtocol.pinPaths must be a non-empty array — it is the only gate between the fixer and the pin it is judged by`,
+    );
+  }
+  if (p.requirePin) {
+    if (!p.pinPattern.trim()) throw new Error(`fr-batch: ${where} bugProtocol.requirePin is on but pinPattern is empty — nothing could ever satisfy it`);
+    try {
+      new RegExp(p.pinPattern);
+    } catch (e) {
+      // Compiled at LOAD, not at the gate: a bad pattern discovered three phases in would surface
+      // after the fixer had already edited the tree.
+      throw new Error(`fr-batch: ${where} bugProtocol.pinPattern is not a valid regular expression (${(e as Error).message})`);
+    }
+  }
 }
 
 /** Merge the queue's transient block over the defaults so an older queue.json still loads. */

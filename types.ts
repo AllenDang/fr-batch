@@ -1,10 +1,27 @@
 /** Driver-synthesised gap id. Machinery, not scope: never filtered as out-of-contract. */
 export const UNPARSEABLE_GAP_ID = "AUDIT-UNPARSEABLE";
 
-export type ItemStatus = "pending" | "implementing" | "verifying" | "auditing" | "fixing" | "paused" | "blocked" | "committed";
+export type ItemStatus = "pending" | "implementing" | "verifying" | "auditing" | "fixing" | "paused" | "blocked" | "committed" | "skipped";
+
+/**
+ * True when an item needs no further work, so the driver must not select it again.
+ *
+ * BOTH members matter and `skipped` is the one that bites. Every reader used to spell this
+ * `!== "committed"` inline, and a `skipped` item under that predicate is re-selected forever:
+ * the outer loop re-runs a real shell command, spawns nothing, and never exits. Worse, the
+ * PRE-LOCK clean-tree guard reads the same predicate to decide whether the next item is fresh —
+ * a `skipped` item ahead of a pending one made `nextStatus` non-pending, skipped the dirty-tree
+ * refusal, and let `git add -A` commit the previous item's abandoned work under the next item's
+ * message. So this is a helper rather than four inline comparisons.
+ */
+export const isDone = (s: ItemStatus): boolean => s === "committed" || s === "skipped";
+
+/** Which pipeline an item runs. Absent means "fr", so every pre-existing queue is unchanged. */
+export type ItemKind = "fr" | "bug";
+export const ITEM_KINDS: readonly ItemKind[] = ["fr", "bug"];
 
 /** Which child was in flight when a transient failure paused the item. */
-export type Phase = "implement" | "audit" | "fix-verify" | "fix-audit";
+export type Phase = "implement" | "audit" | "fix-verify" | "fix-audit" | "bugfix" | "scope";
 
 /**
  * Reasoning efforts pi accepts. Same list as pi's own THINKING_LEVELS
@@ -40,6 +57,23 @@ export type RoleConfigs = Partial<Record<ChildRole, ChildConfig>>;
 export interface QueueItem {
   id: string;
   plan: string;
+  /**
+   * Which pipeline runs this item. Omit for "fr" — that default is what keeps every existing
+   * queue.json working untouched.
+   */
+  kind?: ItemKind;
+  /**
+   * kind:"bug" only. The token substituted into `bugProtocol.run` / `results` / `pinPaths`.
+   * Defaults to `dirname(plan)`, which is right for a report living inside its fixture dir and
+   * wrong for the other real shapes — a report under `docs/` beside a fixture under `tests/`, or
+   * a fixture with no report at all. Hence a field rather than only a derivation.
+   *
+   * It is an OPAQUE token, not necessarily a directory: a repo whose unit is `pytest x.py::y` or
+   * `ctest -R name` says so here, and `pinPaths` then names the paths that must not change.
+   */
+  fixture?: string;
+  /** kind:"bug" only. Merged field-by-field over queue.bugProtocol over BUG_PROTOCOL_DEFAULTS. */
+  bugProtocol?: Partial<BugProtocol>;
   fr?: string;
   reads?: string[];
   /** Omit or leave empty to inherit queue.defaultVerify. Shown as "(default)" in status. */
@@ -62,6 +96,92 @@ export interface TransientPolicy {
   probeUrl: string;
   /** Prefer reviving the failed child over respawning it, so its work is not redone. */
   resumeOnRetry: boolean;
+}
+
+/**
+ * How one repo runs a bug fixture and how its verdict is read. **Every field comes from the
+ * queue** — nothing here knows a build system, which is the same rule `defaultVerify` follows and
+ * the reason the driver can be installed once and used by every project.
+ *
+ * Two verdict modes, and which one applies is decided ONCE at capture and recorded in the
+ * baseline:
+ *   scenario  `results` resolves → the per-row name/pass map is the verdict (full anti-cheat)
+ *   exit      `results` is unset → the exit code is the verdict (one bit, said so in the log)
+ * Re-deciding per run is a false-green generator: an item that captured a red scenario baseline
+ * and whose runner later stops writing the sink would be re-classified into exit mode, read
+ * exit 0 as green, and commit with the defect unfixed.
+ */
+export interface BugProtocol {
+  /** Shell command(s) that run one fixture. `{fixture}` and `{plan}` are substituted. */
+  run: string[];
+  /**
+   * Where `run` leaves its per-scenario record: JSONL, one object per line. `null` means the repo
+   * has no such sink and the exit code is the verdict.
+   *
+   * `null` rather than "omit it" because omission cannot survive a field-by-field merge: a queue
+   * that sets `results` for its 172 scenario-shaped fixtures would force the same path onto its 17
+   * exit-shaped ones, whose runner never writes it, and each would hard-block forever. Same
+   * sentinel idea as config.ts's `model: "inherit"`.
+   */
+  results: string | null;
+  nameField: string;
+  passField: string;
+  /** Exit codes meaning the defect reproduces / is gone / cannot be judged. Must be disjoint. */
+  redExit: number[];
+  greenExit: number[];
+  invalidExit: number[];
+  /**
+   * Paths that must not change while the item is being fixed — the pin and the report ARE the
+   * spec. Separate from `fixture` because that may be an opaque runner token while git needs
+   * real paths. Empty is refused: it would disable the only gate between the fixer and its spec.
+   */
+  pinPaths: string[];
+  /** Require the fix to also add a file matching `pinPattern` (a permanent in-suite regression pin). */
+  requirePin: boolean;
+  pinPattern: string;
+  /** Require the diff to touch a file the report's `file:line` citations name. Heuristic; off by default. */
+  requireMechanismTouch: boolean;
+}
+
+/**
+ * Applied under `queue.bugProtocol` and `item.bugProtocol`.
+ *
+ * DELIBERATELY CARRIES NO `run` AND NO `results`. A default runner command would hardcode one
+ * project's build system in this file, which is the drift the whole extension is built to avoid —
+ * and it would pass a grep that only scans the bug pipeline, so the guard has to scan every root
+ * module instead.
+ */
+export const BUG_PROTOCOL_DEFAULTS: Omit<BugProtocol, "run" | "results"> = {
+  nameField: "name",
+  passField: "passed",
+  redExit: [1],
+  greenExit: [0],
+  invalidExit: [2],
+  pinPaths: ["{fixture}", "{plan}"],
+  requirePin: false,
+  pinPattern: "",
+  requireMechanismTouch: false,
+};
+
+/** Which verdict channel a bug item was captured under. Frozen at capture; never re-derived. */
+export type BugMode = "scenario" | "exit";
+
+/**
+ * A bug item's red state, captured before anything edits the tree and then read-only.
+ *
+ * This is the bug lane's whole equivalent of the FR lane's frozen contract, and unlike that one it
+ * is MACHINE-CAPTURED — nobody writes it by hand, so it cannot drift from the pin it describes.
+ * It has to be persisted because the per-scenario sink is rewritten by every run: after the fixer
+ * has worked, the "before" state is unrecoverable.
+ */
+export interface Baseline {
+  capturedAt: string;
+  mode: BugMode;
+  fixture: string;
+  plan: string;
+  exitCode: number;
+  /** scenario mode only: name -> passed, as captured. Empty in exit mode. */
+  scenarios: Record<string, boolean>;
 }
 
 export interface Queue {
@@ -100,6 +220,12 @@ export interface Queue {
    * the batch, which is what this split exists to stop.
    */
   transientQuota?: Partial<TransientPolicy>;
+  /**
+   * How this repo runs a bug fixture. Required (here or per item) as soon as any item declares
+   * `kind: "bug"`, and refused at load otherwise — an absent protocol cannot be defaulted into
+   * anything safe, the same argument `defaultVerify` makes.
+   */
+  bugProtocol?: Partial<BugProtocol>;
   /** Batch-wide model for every child that does not override it. Omit to inherit the session's. */
   defaultModel?: string;
   /** Batch-wide reasoning effort. Omit to inherit the session's. */

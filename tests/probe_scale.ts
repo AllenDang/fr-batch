@@ -96,7 +96,7 @@ ok("...but not while a driver may be writing progress.json", (() => {
 })());
 
 const sAll = renderStatus(big, {}, { all: true });
-const rowCount = (s: string) => (s.match(/^ {2}[✓✗⏸… ] +\d+\. /gm) ?? []).length;
+const rowCount = (s: string) => (s.match(/^ {2}[✓✗⏸○… ] +\d+\. /gm) ?? []).length;
 ok("all:true lists every row", rowCount(sAll) === 342, String(rowCount(sAll)));
 ok("...and folds nothing", !sAll.includes("hidden —"));
 ok("...and drops the summary hint it no longer needs", !sAll.includes("all:true = every row"));

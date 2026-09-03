@@ -4,7 +4,7 @@ import { asEffort, modelLabel, normalizeChildConfig } from "./config.ts";
 import { archiveDir, historyPath, itemStateFiles, progressPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
 import { describeLive, drivers } from "./state.ts";
 import { STALE_RUNLOCK_MS, appendHistory, countHistory, loadHistory, loadProgress, loadQueue, statusOf } from "./store.ts";
-import { THINKING_EFFORTS } from "./types.ts";
+import { THINKING_EFFORTS, isDone } from "./types.ts";
 import type { HistoryEntry, QueueItem } from "./types.ts";
 
 export interface AddArgs {
@@ -126,7 +126,7 @@ export function removeItem(cwd: string, id: string): string {
       `Dropping the queue entry would orphan those edits. Clear it first: fr_batch action "reset", only: "${id}"`,
       "(that also drops its frozen contract and ledger), then remove it.",
     ].join("\n");
-  if (s !== "pending" && s !== "blocked") {
+  if (s !== "pending" && s !== "blocked" && s !== "skipped") {
     return [
       `fr-batch: refused — "${id}" is currently ${s}.`,
       drivers.has(cwd)
@@ -228,11 +228,14 @@ export function archiveItems(cwd: string, only?: string): string {
   const q = loadQueue(cwd);
   const progress = loadProgress(cwd);
 
-  const targets = q.items.filter((i) => statusOf(progress, i.id) === "committed" && (!only || i.id === only));
+  // `skipped` is swept alongside `committed`: it is equally at rest, it carries no sha, and leaving
+  // it out would strand it in the live queue forever — `remove` is the only other exit and that
+  // discards the record instead of keeping it.
+  const targets = q.items.filter((i) => isDone(statusOf(progress, i.id)) && (!only || i.id === only));
   if (targets.length === 0) {
     if (only) {
       const s = q.items.some((i) => i.id === only) ? statusOf(progress, only) : "not queued";
-      return `fr-batch: nothing archived — "${only}" is ${s}. Only committed items can be archived.`;
+      return `fr-batch: nothing archived — "${only}" is ${s}. Only committed or skipped items can be archived.`;
     }
     const liveCount = q.items.length;
     return `fr-batch: nothing to archive — no committed items in the queue (${liveCount} live item(s), ${countHistory(cwd)} already archived).`;
