@@ -40,6 +40,8 @@ agent definitions. Nothing to install separately and nothing to place in `~/.pi/
 | `fr-implementer` | implement | yes | prose report |
 | `fr-test-auditor` | audit | **no** (no edit/write tool) | `structured_output` verdict |
 | `fr-gap-fixer` | fix (red verify, and audit gaps) | yes | `structured_output` report |
+| `fr-bug-fixer` | `kind:"bug"` fix | yes | prose report |
+| `fr-bug-scoper` | `kind:"bug"` sibling scout | **no** (no edit/write tool) | prose, non-blocking |
 
 If a run ever reports `Unknown agent: fr-implementer`, the installed copy predates this or a
 package filter dropped the directory: `pi update`, `/reload`, and check `/subagents`. That was
@@ -292,6 +294,105 @@ fr_batch { action: "history", only: "L1-rock" }
 `stop` first, and one that is `paused` holds uncommitted work — `reset` it before removing
 it, or those edits are orphaned with no queue entry that explains them. A **committed** item
 is not removable at all: `archive` is its exit, and it keeps the record.
+
+## Two kinds of item
+
+An item's `kind` picks its pipeline. Omit it and you get `"fr"`, so every existing `queue.json`
+keeps working untouched.
+
+```jsonc
+{ "id": "L0-base",  "plan": "docs/FR_base_PLAN.md" }                                  // kind:"fr"
+{ "id": "x2-move",  "kind": "bug",
+  "plan": "tests/fixtures/x2_move_axis_clobbers_other_axes_bug/BUG_REPORT.md" }        // fixture = the plan's dir
+{ "id": "foreach",  "kind": "bug",
+  "plan": "docs/FIX_foreach_over_event_array.md",
+  "fixture": "tests/fixtures/foreach_over_event_array_bug" }                           // report elsewhere
+```
+
+```
+implement → verify → adversarial audit → [fix → verify → audit]×N → commit      kind:"fr"
+capture  →  [fix → gate]×N  →  scope  →  commit                                 kind:"bug"
+```
+
+**One kind per run**, because one working tree takes one writer: two pipelines alternating in it
+would let one item's `git add -A` swallow the other's half-finished state.
+
+```
+/fr-batch run          # kind:"fr"
+/fr-batch run-bug      # kind:"bug"
+fr_batch { action: "run", kind: "bug" }
+```
+
+`only:<id>` overrides the filter, and dispatch always follows the **item's** own kind — otherwise
+every `continue` / `reset` command a bug item's own messages print would filter that item out and
+report "finished. 0 of 0".
+
+### Why the bug pipeline has no audit loop
+
+The FR pipeline's frozen contract and three convergence guards exist for one reason: **its
+implementer writes the tests it will be judged by**, so under-testing is invisible to the project's
+own gate and only an adversarial auditor can catch it. That audit is open-ended, hence the machinery
+that makes it terminate.
+
+A bug fixture inverts the premise. The pin **pre-exists the fix** and was written by someone who did
+not have to make it pass, so the verdict is the project's own runner and the anti-cheat is a
+comparison against a state captured before anything was edited. No contract, no ledger, no auditor —
+about 60% of the FR pipeline's complexity has nothing to bite on here.
+
+One cheat survives that argument, and it is the reason this pipeline looks the way it does: **the pin
+is a file in the tree and the fixer holds `edit`/`write`.** Invert one assertion and a naive gate
+sees the reproduction go green, the project's suite never runs fixtures, and the batch commits the
+destruction of the only record of the defect. So:
+
+- **the pin must be committed** before capture — git reports no changes for a path it does not
+  track, so an untracked pin has no protection at all;
+- **the pin and the report may not change**, checked with `git status --porcelain` and not
+  `git diff --name-only HEAD`. Measured: with a tracked pin edited *and* an untracked file added
+  inside the fixture, `diff` reports only the first. Tracked-only would let a fixer add a second pin
+  the runner picks up, and would make `requirePin` red every correct fix, since a new in-suite test
+  is untracked until the driver's own `git add -A`.
+
+### The protocol comes from your repo
+
+This driver knows no test runner either. `queue.bugProtocol` (overridable per item) says how to run
+one pin and how to read its verdict:
+
+```jsonc
+"bugProtocol": {
+  "run": ["./bin/ange test {fixture}"],
+  "results": "{fixture}/.ange_test_results.jsonl",   // JSONL: one {name, passed} per line
+  "redExit": [1], "greenExit": [0], "invalidExit": [2],
+  "requirePin": true, "pinPattern": "^tests/test_.*\\.cpp$"
+}
+```
+
+**Two verdict modes, decided once at capture and recorded in `<id>.baseline.json`:**
+
+| mode | when | verdict | anti-cheat |
+|---|---|---|---|
+| scenario | `results` resolves | the per-row `name`/`passed` map | full — `false→true` required, `true→true` required, a missing row is a failure |
+| exit | `results` is `null` | the exit code | one bit; said so in the log |
+
+`"results": null` **explicitly unsets** an inherited sink. That sentinel is not cosmetic: a
+field-by-field merge has no spelling for "absent", so a queue that sets `results` for its
+scenario-shaped fixtures would force the same path onto its exit-shaped ones — whose runner never
+writes it — and each would block forever. Measured on ange: **172 of 189 `*_bug` fixtures are
+scenario-shaped and 17 are not**, so one queue certainly holds both.
+
+The mode is **never re-derived** at the gate. An item that captured a red scenario baseline and whose
+runner later stopped writing the sink would otherwise be re-classified into exit mode, read exit 0 as
+green, and commit with the defect unfixed.
+
+### `skipped`
+
+A pin that is already green when the batch reaches it needs no work, and `committed` would be a lie —
+there is no commit. It becomes `skipped`, which is a **terminal** status: the driver's selection, its
+pre-lock clean-tree guard, the dry run and the `finished` line all treat it like `committed`, or a
+skipped item is re-selected forever and the clean-tree refusal silently stops firing. `archive`
+sweeps it with no sha; `remove` accepts it.
+
+This is what makes fixing one defect that greens a whole cluster free: the siblings are skipped
+without spawning anything.
 
 ## Arming
 
@@ -555,6 +656,7 @@ not by scrolling.
 | `store.ts` | 314 | on-disk state: queue (+ budget defaults/validation), progress, history, run lock, artifact pruning. |
 | `render.ts` | 298 | `status` (summary / all / one item) and `history` rendering. |
 | `contract.ts` | 301 | the frozen audit contract, the gap ledger, out-of-scope recording, verdict parsing. |
+| `bug_pipeline.ts` | 801 | `runBugItem` — the `kind:"bug"` pipeline: capture the red baseline, fix, gate, scope. |
 | `queue_ops.ts` | 292 | `add` / `remove` / `reset` / `archive` — the only writers of `queue.json`. |
 | `background.ts` | 188 | start / stop / finish the background driver, and how it reports back. |
 | `prompts.ts` | 144 | the three agents' per-item task text. Prose, not logic. |

@@ -19,6 +19,58 @@ const wr = (f, t) => writeFileSync(join(root, f), t);
 /** file, a description, and the edit that undoes the fix. `probe` must FAIL after it. */
 const MUTATIONS = [
   {
+    name: "the changed-path set goes back to a tracked-only git diff",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('const r = await pi.exec("git", ["status", "--porcelain", "-z"], { cwd });', 'const r = await pi.exec("git", ["diff", "--name-only", "-z", "HEAD"], { cwd });'),
+  },
+  {
+    name: "the baseline comparison only looks at what was failing",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace("    if (was && !now) c.regressions.push(name);\n", ""),
+  },
+  {
+    name: "the comparison iterates the after-run instead of the baseline",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace("      c.missing.push(name);\n", ""),
+  },
+  {
+    name: "a well-formed non-scenario row is keyed by its absent name",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) =>
+      t.replace(
+        'if (typeof name !== "string" || !name.trim() || typeof passed !== "boolean") {',
+        'if (false) {',
+      ),
+  },
+  {
+    name: "a duplicate scenario name is last-write-wins again",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace("    if (Object.hasOwn(scan.scenarios, name)) {", "    if (false) {"),
+  },
+  {
+    name: "the results sink is not deleted before a run, so a stale one is read as the verdict",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace("  if (sink) rmSync(join(cwd, sink), { force: true });", ""),
+  },
+  {
+    name: "BUG_PROTOCOL_DEFAULTS hardcodes one project's runner",
+    probe: "probe_bug.ts",
+    file: "types.ts",
+    mutate: (t) => t.replace('  nameField: "name",', '  run: ["./bin/ange test {fixture}"],\n  nameField: "name",'),
+  },
+  {
+    name: "`results: null` falls through and re-inherits the outer sink",
+    probe: "probe_bug.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("    results: merged.results,", "    results: merged.results ?? (q.bugProtocol?.results as string | null) ?? null,"),
+  },
+  {
     name: "agent definitions are not shipped",
     probe: "probe_install.ts",
     apply: () => renameSync(join(root, "agents"), join(root, "agents.off")),
