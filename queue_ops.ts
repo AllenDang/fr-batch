@@ -215,7 +215,7 @@ export function resetItem(cwd: string, id: string): string {
   // The frozen contract and the gap ledger are part of "from scratch": a re-run must
   // re-freeze against the PLAN as it reads now, not inherit the old snapshot.
   for (const p of dropped) rmSync(p, { force: true });
-  return `fr-batch: reset "${id}" (was ${was})${dropped.length ? `, dropped ${dropped.length} state file(s) incl. the frozen audit contract` : ""}. It will be implemented from scratch on the next run.`;
+  return `fr-batch: reset "${id}" (was ${was})${dropped.length ? `, dropped ${dropped.length} state file(s) — the frozen contract or the captured baseline, whichever this item had` : ""}. It starts over on the next run.`;
 }
 
 /**
@@ -318,7 +318,7 @@ export function archiveItems(cwd: string, only?: string): string {
   writeAtomic(progressPath(cwd), `${JSON.stringify(progress, null, 2)}\n`);
 
   return [
-    `fr-batch: archived ${entries.length} committed item(s) to ${historyPath(cwd)} — ${entries.map((e) => e.id).join(", ")}.`,
+    `fr-batch: archived ${entries.length} item(s) at rest to ${historyPath(cwd)} — ${entries.map((e) => e.id).join(", ")}.`,
     `queue is now ${q.items.length} live item(s); ${countHistory(cwd)} archived in total.`,
     ...(moves.length > 0 ? [`Frozen contract + gap ledger moved to .pi/fr-batch/archive/<id>/ for ${moves.length} item(s).`] : []),
     'Read the record back with fr_batch action "history" (add only:<id> for one item in full).',

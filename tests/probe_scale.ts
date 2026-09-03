@@ -121,7 +121,7 @@ writeFileSync(join(repo, ".pi/fr-batch/done-1.contract.md"), "# frozen matrix\n"
 writeFileSync(join(repo, ".pi/fr-batch/done-1.gaps.json"), '{"W1":{"kind":"k","what":"w","raisedRounds":[1],"state":"closed"}}');
 
 const out = archiveItems(repo);
-ok("archive sweeps every committed item", /archived 3 committed item\(s\)/.test(out), out.split("\n")[0]);
+ok("archive sweeps every item at rest", /archived 3 item\(s\) at rest/.test(out), out.split("\n")[0]);
 ok("...and reports what the queue is left with", /queue is now 4 live item\(s\); 3 archived in total/.test(out), out.split("\n")[1]);
 
 const q = loadQueue(repo);

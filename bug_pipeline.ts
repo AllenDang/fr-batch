@@ -840,6 +840,9 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
   }
 
   // ---- ③ scope (non-blocking) ----------------------------------------------
+  // `auditing` is reused rather than adding a status: nothing switches on it, `isDone` does not
+  // include it, and a ninth ItemStatus member would need arms in render, remove and archive for a
+  // phase that cannot fail the item. The log line says what is actually happening.
   setProgress(cwd, item.id, { status: "auditing", fixRounds: round });
   log("  scope: looking for sibling call sites…");
   try {

@@ -21,6 +21,13 @@ export type ItemKind = "fr" | "bug";
 export const ITEM_KINDS: readonly ItemKind[] = ["fr", "bug"];
 
 /** Which child was in flight when a transient failure paused the item. */
+/**
+ * Which child was in flight when a transient failure paused the item.
+ *
+ * `"scope"` is RESERVED, not used: the sibling scout deliberately routes no pause and no decision
+ * ask, because it runs after the gate is already green and must not be able to cost an item that
+ * passed. It is listed so a future change that does want to pause it cannot forget the type.
+ */
 export type Phase = "implement" | "audit" | "fix-verify" | "fix-audit" | "bugfix" | "scope";
 
 /**

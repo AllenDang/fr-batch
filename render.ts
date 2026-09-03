@@ -125,7 +125,10 @@ export function renderItemDetail(cwd: string, id: string, session: ChildConfig):
     ...v.cmds.map((c) => `           ${c}`),
     `model:     ${itemModelLabel(q, item, session)}`,
     ...(gaps.length > 0 ? [`gaps:      ${gaps.length} adjudicated, ${open.length} open${open.length ? ` (${open.map(([k]) => k).join(", ")})` : ""}`] : []),
-    `state:     ${itemStateFiles(cwd, id).filter((f) => existsSync(f)).length}/${itemStateFiles(cwd, id).length} file(s) present in .pi/fr-batch/`,
+    // Present-count only, no denominator. itemStateFiles is the UNION over both kinds, so a fixed
+    // denominator makes every item's detail read as incomplete forever: an FR item can never own a
+    // baseline or a siblings file, and a bug item can never own a contract or a gap ledger.
+    `state:     ${itemStateFiles(cwd, id).filter((f) => existsSync(f)).length} state file(s) in .pi/fr-batch/`,
     ...(p?.pendingAsk ? ["", "pending question (verbatim):", p.pendingAsk] : []),
     ...(p?.note ? ["", "note:", ...p.note.split("\n").map((l) => `  ${l}`)] : []),
   ].join("\n");

@@ -278,15 +278,16 @@ export async function runBatch(
         );
       }
       if (statusOf(progress, item.id) === "blocked" && (progress[item.id]?.note ?? "").length > 0) {
+        const spec = kindOf(item) === "bug" ? "captured baseline" : "frozen contract";
         return [
           `fr-batch: STOPPED — ${item.id} is blocked from an earlier run.`,
           "",
           progress[item.id]?.note ?? "",
           "",
           "A block is STICKY: re-running does not retry it, because the recorded phase and this",
-          "item's frozen contract are still on disk and the driver will not guess which of them the",
+          `item's ${spec} are still on disk and the driver will not guess which of them the`,
           "fix invalidated. Once you have fixed the cause, clear the state deliberately:",
-          `  fr_batch action "reset", only: "${item.id}"   — re-implements from scratch and re-freezes the contract`,
+          `  fr_batch action "reset", only: "${item.id}"   — starts over and re-captures the ${spec}`,
           `  fr_batch action "remove", only: "${item.id}"  — drops it from the queue instead`,
         ].join("\n");
       }
@@ -297,7 +298,11 @@ export async function runBatch(
       const roleCfg = (role: ChildRole): ChildConfig => resolveChildConfig(q, item, role, session);
       const spawnFor = (role: ChildRole): { model?: string } => childSpawnParams(roleCfg(role));
       log(`  model: ${itemModelLabel(q, item, session)}`);
-      for (const role of CHILD_ROLES) {
+      // A bug item spawns only the fixer and the scoper (which reuses the `auditor` role), so warning
+      // about `implementer` would name a child that never runs. Roles are model/effort selectors
+      // shared between the two pipelines; this is the one place that difference is visible.
+      const rolesInPlay = kindOf(item) === "bug" ? CHILD_ROLES.filter((r) => r !== "implementer") : CHILD_ROLES;
+      for (const role of rolesInPlay) {
         const cfg = roleCfg(role);
         if (effortUndeliverable(cfg)) {
           log(`  WARNING: ${role} thinking:${cfg.thinking} is NOT applied — no model resolved to carry it. Set queue.defaultModel.`);
@@ -606,9 +611,6 @@ export async function runBatch(
       // Frozen before the first audit and reused for every round after it. This is the
       // whole convergence mechanism: the checklist cannot grow while it is being audited.
       const contract = await freezeContract(pi, cwd, item, log);
-      // Blocking-gap count of the previous round, for the strict-shrink check. Null on the
-      // first audit of this run.
-      let prevBlocking: number | null = null;
       // Consecutive unparseable-verdict retries at the CURRENT round. Reset on any
       // parseable verdict; never consumes a fix round.
       let auditAttempt = 0;
@@ -801,9 +803,31 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         }
         log(`  audit found ${blocking.length} in-contract gap(s)`);
 
-        // Non-convergence guards. Both are "stop and show a human", never "spend another
-        // round": a loop that re-litigates a settled row or grows its gap set does not have
-        // a fixed point, and burning maxFixRounds only hides that as a timeout.
+        // Non-convergence guard. "Stop and show a human", never "spend another round": a loop that
+        // re-litigates a settled row does not have a fixed point, and burning maxFixRounds only
+        // hides that as a timeout.
+        //
+        // THERE USED TO BE A SECOND ONE HERE — block when this round's in-contract gap count did not
+        // fall below the previous round's — and it was WRONG BY CONSTRUCTION, not merely noisy.
+        // `repeats` is computed before the ledger is updated and returns above, so the count check
+        // could only ever execute when `repeats` was EMPTY, i.e. when every gap this round had never
+        // been raised before. Its firing condition was therefore: the fixer closed all N of the
+        // previous round's gaps AND the auditor discovered N or more previously unexamined contract
+        // rows. That is the best trajectory available, and it is the one that got blocked.
+        //
+        // The false premise was that an audit is exhaustive at round 0. It is not: an auditor
+        // establishes coverage empirically, one row at a time, and a large matrix takes several
+        // rounds to walk. Incremental discovery is the normal shape, not a runaway signal. Measured
+        // on a real batch: a 16-row matrix was exhausted in one round with zero gaps, while a 71-row
+        // one was still surfacing new rows in round 3 — and that item was stopped with two rounds of
+        // budget left, then idled for hours waiting for a human, for converging correctly.
+        //
+        // Nothing replaced it, because every count-based variant is unreachable behind `repeats`:
+        // if the ledger's distinct-id total did not grow, every id this round was already in it, so
+        // every id has a non-empty raisedRounds, so `repeats` fired one guard earlier. `repeats`
+        // plus `maxFixRounds` are jointly sufficient. (Nothing in the suite ever pinned the count
+        // check, which is its own evidence: 436 assertions and 31 mutations, none of them touching
+        // a guard that could not catch anything real.)
         if (repeats.length > 0) {
           const detail = repeats
             .map((id) => `  - ${id} (raised in round(s) ${(ledger[id]?.raisedRounds ?? []).join(", ")}${ledger[id]?.reason ? `; fixer had rejected it: ${ledger[id]?.reason}` : ""})`)
@@ -823,25 +847,10 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
             ].join("\n"),
           );
         }
-        if (prevBlocking !== null && blocking.length >= prevBlocking) {
-          return block(
-            [
-              `Audit is not converging: this round reports ${blocking.length} in-contract gap(s), the previous round reported ${prevBlocking} — the gap set is not shrinking.`,
-              "",
-              blocking.map((g) => `  - [${g.id} · ${g.kind}] ${g.what}`).join("\n"),
-              "",
-              "A fix round that does not reduce the gap count is expanding scope, not closing it.",
-              "",
-              `Verdict: ${rawPath}`,
-              `Ledger:  ${ledgerPath(cwd, item.id)}`,
-            ].join("\n"),
-          );
-        }
         if (round >= q.maxFixRounds) {
           const list = blocking.map((g) => `  - [${g.id} · ${g.kind}] ${g.what}`).join("\n");
           return block(`Audit still reports ${blocking.length} in-contract gap(s) after ${q.maxFixRounds} fix round(s):\n${list}\n\nFull verdict: ${rawPath}`);
         }
-        prevBlocking = blocking.length;
 
         round += 1;
         setProgress(cwd, item.id, { status: "fixing", fixRounds: round });

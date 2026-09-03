@@ -49,6 +49,16 @@ const MUTATIONS = [
     mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
   },
   {
+    name: "the strict-shrink guard comes back and blocks incremental audit discovery",
+    probe: "probe_fr_regression.ts",
+    file: "driver.ts",
+    mutate: (t) =>
+      t.replace(
+        "        if (round >= q.maxFixRounds) {\n          const list = blocking.map",
+        '        if (round > 0 && blocking.length >= 2) {\n          return block("Audit is not converging: the gap set is not shrinking.");\n        }\n        if (round >= q.maxFixRounds) {\n          const list = blocking.map',
+      ),
+  },
+  {
     name: "the assume-unchanged escape hatch is not checked",
     probe: "probe_bug.ts",
     file: "bug_pipeline.ts",

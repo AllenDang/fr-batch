@@ -17,7 +17,15 @@ import type { Log } from "./types.ts";
 // fr-batch — sequential FR-PLAN executor with a mechanical test-completeness
 // gate, and a queue that stays editable WHILE the batch runs.
 //
-// Per item:  implement → verify → audit → [fix → verify → audit]×N → commit
+// Per item, and which one depends on the item's `kind`:
+//   kind:"fr"   implement → verify → audit → [fix → verify → audit]×N → commit
+//   kind:"bug"  capture the red pin → [fix → gate]×N → scope → commit
+//
+// ONE KIND PER RUN, because one working tree takes one writer: two pipelines alternating in it
+// would let one item's `git add -A` swallow the other's half-finished state. `driver.ts`'s
+// `inScope` predicate is applied at BOTH the pre-lock clean-tree guard and the item selection,
+// and dispatch follows the ITEM's kind, never the run's — otherwise every `continue` command a
+// bug item's own messages print would filter that item out.
 //
 // `run` STARTS A BACKGROUND DRIVER AND RETURNS. pi delivers a queued user message only
 // between assistant turns, so awaiting a multi-hour batch inside the tool call froze the
@@ -52,7 +60,7 @@ import type { Log } from "./types.ts";
 // render of ~300 lines. Archiving keeps the live pair at the size of the open batch and
 // moves the finished record to a file nothing reads on the hot path.
 //
-// THE AUDIT LOOP TERMINATES BECAUSE ITS CONTRACT IS FROZEN. Three per-item files
+// THE FR AUDIT LOOP TERMINATES BECAUSE ITS CONTRACT IS FROZEN. Three per-item files
 // make the gap set shrink monotonically instead of chasing a moving target:
 //
 //   <id>.contract.md      the PLAN's `## Tests` matrix as committed at HEAD, before
@@ -61,6 +69,16 @@ import type { Log } from "./types.ts";
 //                         it was raised in, and whether it is open/closed/rejected.
 //   <id>.out-of-scope.md  findings outside the frozen contract. Recorded for a
 //                         follow-up FR; never blocking, never sent to the fixer.
+//
+// A kind:"bug" item has NONE of those, and needs none: its pin pre-exists the fix and was
+// written by someone who did not have to make it pass, so the verdict is the project's own
+// runner rather than an adversarial reading. It owns two files instead:
+//
+//   <id>.baseline.json    the pin's RED state, machine-captured before anything was edited:
+//                         per-scenario pass map, HEAD, and a content hash of every pin file.
+//                         The hash is the gate — a diff can be silenced five ways from inside
+//                         the tree, and each was reachable by the child it constrains.
+//   <id>.siblings.md      sibling call sites the scout found. Non-blocking, like out-of-scope.
 //
 // Without the freeze the loop has no fixed point: the fixer is told to keep the
 // live PLAN's matrix truthful, and an auditor judged against the LIVE matrix then

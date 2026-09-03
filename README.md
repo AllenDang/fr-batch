@@ -181,14 +181,37 @@ point:
    enforced in the driver, not just asked for in the prompt — and it is a token match, not a
    substring one: a bare `includes` made `T1` "in contract" for any PLAN mentioning `T10`, so an
    invented id could pass the one gate that keeps an item from being blocked by out-of-scope work.
-3. **The gap set must shrink, and nothing is re-litigated.** The ledger remembers every id
-   and the rounds that raised it. A re-raised id, or a round whose in-contract gap count did
-   not fall, stops the batch for a human instead of spending another round. The fixer's
+3. **Nothing is re-litigated.** The ledger remembers every id and the rounds that raised it. A
+   re-raised id stops the batch for a human instead of spending another round. The fixer's
    `rejected` list is durable, so an invalid gap dies once instead of every round.
 
 Without (1) the loop has no fixed point at all: the fixer adds matrix rows and production
 branches while closing gaps, and an auditor judged against the live PLAN then demands tests
 for both. `maxFixRounds` only hides that as "blocked after N rounds".
+
+**There used to be a fourth rule — block when a round's in-contract gap count did not fall — and it
+was wrong by construction.** `repeats` is evaluated first and returns, so the count check could only
+run when *no* gap that round had ever been raised before. Its firing condition was therefore "the
+fixer closed every gap from the last round AND the auditor found at least as many previously
+unexamined contract rows" — the best trajectory available, blocked as if it were the worst.
+
+The premise behind it was that an audit is exhaustive at round 0. It is not: coverage is established
+empirically, a row at a time, so a large matrix takes several rounds to walk and **incremental
+discovery is the normal shape**. Measured on a real batch: a 16-row matrix was exhausted in one round
+with zero gaps, while a 71-row one was still surfacing new rows in round 3 — and it was stopped with
+two rounds of budget left, then idled for hours waiting for a human, for converging correctly. Both
+exits it offered (`reset`, or fix by hand) cost far more than the round it refused to spend.
+
+Nothing replaced it. Every count-based variant is unreachable behind `repeats`: if the ledger's
+distinct-id total did not grow, every id that round was already in it, so every one has a non-empty
+`raisedRounds`, so `repeats` already fired. Rule 3 plus `maxFixRounds` are jointly sufficient.
+
+**What that leaves open, stated rather than hidden:** if one audit round cannot walk a whole matrix,
+then `complete` means "found nothing in what I examined", not "examined everything". A green verdict
+on round 0 of a 71-row contract is therefore weaker than it reads. That is the same vacuity
+`planTestGate` exists to prevent, one level in — and unlike a false block it is invisible. Closing it
+needs the auditor to report which rows it actually reached, which is a change to its schema and its
+contract, not to this loop.
 
 ## Disk footprint
 

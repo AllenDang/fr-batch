@@ -161,7 +161,11 @@ function assertBugProtocol(q: Queue, item: QueueItem): void {
   // with a pin path is refused, and it is refused here so a queue edit cannot arrange it for a
   // later item either.
   if (p.results !== null) {
-    const sub = (s: string) => s.replace(/\{(fixture|plan)\}/g, (_m, k: string) => (k === "fixture" ? (item.fixture ?? "") : item.plan));
+    // The SAME derivation the runtime uses (bug_pipeline's fixtureOf). An earlier draft substituted
+    // `item.fixture ?? ""` here, so for the documented default shape — an item that omits `fixture` —
+    // the load-time check and the gate disagreed about what the paths were.
+    const fx = item.fixture ?? dirname(item.plan);
+    const sub = (s: string) => s.replace(/\{(fixture|plan)\}/g, (_m, k: string) => (k === "fixture" ? fx : item.plan));
     const sink = sub(p.results);
     const collision = p.pinPaths.map(sub).find((pp) => pp === sink);
     if (collision !== undefined) {
