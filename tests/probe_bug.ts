@@ -19,6 +19,7 @@ import {
   parseResults,
   runFixture,
   shellQuote,
+  suppressedPins,
   substituteTokens,
   underPath,
 } from "../bug_pipeline.ts";
@@ -336,6 +337,16 @@ const bl = (scenarios: Record<string, boolean>): Baseline => ({
   ok("...and the fixture dir itself", underPath(repo, "fx", "fx"));
   ok("...and rejects a sibling that merely shares a prefix", !underPath(repo, "fxx/test.yaml", "fx"));
   ok("...and rejects a path outside it", !underPath(repo, "src/a.cpp", "fx"));
+
+  // A tracked pin whose changes git has been told to stop reporting is as unprotected as an
+  // untracked one: `--porcelain` AND `diff HEAD` both go silent, and `git add -A` does not stage
+  // the edit either — so the item would commit green with the defect intact and no record.
+  ok("a normal tracked pin is not reported as suppressed", (await suppressedPins(realPi, repo, ["fx"])).length === 0);
+  execFileSync("git", ["update-index", "--assume-unchanged", "fx/test.yaml"], { cwd: repo });
+  const supp = await suppressedPins(realPi, repo, ["fx"]);
+  ok("assume-unchanged on the pin IS detected", supp.length === 1 && supp[0].includes("fx/test.yaml"), supp.join(","));
+  ok("...and neither ordinary probe can see the edit it hides", !(await changedPaths(realPi, repo)).includes("fx/test.yaml"));
+  execFileSync("git", ["update-index", "--no-assume-unchanged", "fx/test.yaml"], { cwd: repo });
 
   const cited = citedFiles(readFileSync(join(repo, "fx", "BUG_REPORT.md"), "utf8"));
   ok("file:line citations are extracted from the report", cited.sort().join(",") === "src/a.cpp,src/b.h", cited.join(","));

@@ -17,9 +17,8 @@ import { join } from "node:path";
 import { runBatch } from "../driver.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
 
-// NOT part of `tests/run.mjs`: it needs a prepared fixture repo, which is built once by
-// tests/e2e_bug_kind_setup.sh from read-only copies of a consuming project's own bug fixtures.
-// Run it by hand after touching bug_pipeline.ts or the driver's dispatch.
+// NOT part of tests/run.mjs: it needs a prepared fixture repo. Run by hand after touching
+// bug_pipeline.ts or the driver dispatch.
 const REPO = process.env.FR_E2E_REPO ?? "/tmp/fr-batch-e2e";
 const FX = "tests/fixtures/x2_move_axis_clobbers_other_axes_bug";
 const EXITFX = "tests/fixtures/docs_build_trap_dylib_bug";
@@ -292,6 +291,34 @@ reset();
   );
   sh("reset", "-q", "--hard", localBase);
   sh("clean", "-qfd");
+}
+reset();
+
+// ---------------------------------------------------------------------------
+console.log("\n--- 9. LAUNDERING via git: a fixer that hides its own edit is refused");
+reset();
+{
+  let phase = "red";
+  const h = harness({
+    mode: () => phase,
+    fixer: () => {
+      // The attack the immutability diff alone cannot see: mark the pin assume-unchanged, then edit
+      // it. `git status --porcelain` and `git diff HEAD` both go silent, and `git add -A` does not
+      // even stage the edit — so without the ls-files check this commits green with the defect
+      // intact and no record of the change anywhere.
+      execFileSync("git", ["update-index", "--assume-unchanged", `${FX}/test.yaml`], { cwd: REPO });
+      const f = join(REPO, FX, "test.yaml");
+      writeFileSync(f, readFileSync(f, "utf8").replace("!=", "=="), "utf8");
+      phase = "fixed";
+    },
+  });
+  const out = await run(h);
+  const p = progress()["x2-move-axis"];
+  ok("the item is BLOCKED", p?.status === "blocked", p?.status ?? "(none)");
+  ok("...naming the suppressed pin and the git letter", out.includes("test.yaml") && out.includes('letter "h"'), out.split("\n").find((l) => l.includes("letter")) ?? "");
+  ok("...and telling the operator how to clear it", out.includes("--no-assume-unchanged"));
+  ok("nothing was committed", sh("log", "--oneline").trim().split("\n").length === baseCount);
+  execFileSync("git", ["update-index", "--no-assume-unchanged", `${FX}/test.yaml`], { cwd: REPO });
 }
 reset();
 

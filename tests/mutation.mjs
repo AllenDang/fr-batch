@@ -25,6 +25,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace('const r = await pi.exec("git", ["status", "--porcelain", "-z"], { cwd });', 'const r = await pi.exec("git", ["diff", "--name-only", "-z", "HEAD"], { cwd });'),
   },
   {
+    name: "the assume-unchanged escape hatch is not checked",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('.filter((l) => l.length > 2 && !l.startsWith("H "))', ".filter(() => false)"),
+  },
+  {
     name: "the baseline comparison only looks at what was failing",
     probe: "probe_bug.ts",
     file: "bug_pipeline.ts",

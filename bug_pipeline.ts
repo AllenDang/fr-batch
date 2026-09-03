@@ -214,13 +214,34 @@ export async function changedPaths(pi: ExtensionAPI, cwd: string): Promise<strin
     .filter(Boolean);
 }
 
-/** True when `child` is `parent` or sits underneath it, after symlink resolution. */
-export function underPath(cwd: string, child: string, parent: string): boolean {
+/** True when `child` is `parent` or sits underneath it, after symlink resolution. */export function underPath(cwd: string, child: string, parent: string): boolean {
   const abs = (p: string) => (isAbsolute(p) ? p : resolve(cwd, p));
   // realpath-free but symlink-safe enough for the containment test: the caller resolves the
   // fixture with realpathSync when it exists, so an unresolved link cannot hide edits under it.
   const rel = relative(abs(parent), abs(child));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Pin paths whose changes git has been told to stop reporting.
+ *
+ * `git update-index --assume-unchanged` (and `--skip-worktree`) make a tracked file's edits
+ * invisible to BOTH `git status --porcelain` and `git diff HEAD` — measured, both go silent — so
+ * without this the immutability gate can be switched off from inside the tree by the one child it
+ * exists to constrain. And `git add -A` then does not stage the edit either, so the item would
+ * commit as green with the defect intact and the laundered pin not even in the commit: a false
+ * green with no evidence left.
+ *
+ * `git ls-files -v` is the only probe that sees it: normal tracked files are `H`, suppressed ones
+ * carry a lowercase letter or `S`.
+ */
+export async function suppressedPins(pi: ExtensionAPI, cwd: string, pins: string[]): Promise<string[]> {
+  const r = await pi.exec("git", ["ls-files", "-v", "--", ...pins], { cwd });
+  return (r.stdout ?? "")
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 2 && !l.startsWith("H "))
+    .map((l) => `${l.slice(2)} (git status letter "${l[0]}")`);
 }
 
 /** Extract `file:line` citations from a report, so the diff can be checked against them. */
@@ -361,8 +382,7 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
     // nothing for a path git does not track, so an untracked fixture could be edited freely. A
     // fixture straight out of a capture workflow is untracked, so this is the normal first step.
     const tracked = await pi.exec("git", ["ls-files", "-z", "--", fixture, item.plan], { cwd });
-    if (((tracked.stdout ?? "").trim().length === 0)) {
-      return {
+    if (((tracked.stdout ?? "").trim().length === 0)) {      return {
         outcome: "return",
         text: ctx.block(
           [
@@ -371,6 +391,25 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
             "This driver protects the pin by diffing it, and git reports no changes for a path it does",
             "not track — so an untracked pin has no protection at all and a fixer could edit the very",
             "assertion it is judged by. Commit the fixture and the report, then re-run.",
+          ].join("\n"),
+        ),
+      };
+    }
+
+    // ...and its changes must be REPORTABLE. A pin already marked assume-unchanged is as
+    // unprotected as an untracked one, and capture is where that has to be caught: after this
+    // point the gate's diff would silently see nothing and read every edit as "the pin is intact".
+    const suppressedAtCapture = await suppressedPins(pi, cwd, pins);
+    if (suppressedAtCapture.length > 0) {
+      return {
+        outcome: "return",
+        text: ctx.block(
+          [
+            `git has been told to stop reporting changes to "${item.id}"'s pin, so it cannot be protected:`,
+            ...suppressedAtCapture.map((s) => `  - ${s}`),
+            "",
+            "Clear it with `git update-index --no-assume-unchanged <path>` (or `--no-skip-worktree`),",
+            "confirm the pin still says what it should, then re-run.",
           ].join("\n"),
         ),
       };
@@ -524,6 +563,28 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
 
     // (a) the pin and the report are untouched. Checked FIRST and it is not a fix round: a fixer
     // that edited its own spec has not failed at fixing, it has changed the question.
+    //
+    // The suppression check comes before the diff, because it is what makes the diff mean anything:
+    // a pin marked assume-unchanged reports no changes to any probe git has.
+    const suppressed = await suppressedPins(pi, cwd, pins);
+    if (suppressed.length > 0) {
+      return {
+        outcome: "return",
+        text: ctx.block(
+          [
+            "git has been told to stop reporting changes to the pin, so it can no longer be protected:",
+            ...suppressed.map((s) => `  - ${s}`),
+            "",
+            "`git update-index --assume-unchanged` / `--skip-worktree` hide a tracked file's edits from",
+            "every probe git offers, and `git add -A` then does not stage them either — so this would have",
+            "committed as green with the defect intact and no record of the change.",
+            "",
+            "Clear it by hand (`git update-index --no-assume-unchanged <path>`), check what the pin now says,",
+            `then start the item again: fr_batch action "reset", only: "${item.id}".`,
+          ].join("\n"),
+        ),
+      };
+    }
     const changed = await changedPaths(pi, cwd);
     const sink = proto.results === null ? null : substituteTokens(proto.results, fixture, item.plan);
     const touchedPin = changed.filter((c) => c !== sink && pins.some((p) => underPath(cwd, c, p)));
