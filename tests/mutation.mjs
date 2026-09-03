@@ -25,6 +25,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace('const r = await pi.exec("git", ["status", "--porcelain", "-z"], { cwd });', 'const r = await pi.exec("git", ["diff", "--name-only", "-z", "HEAD"], { cwd });'),
   },
   {
+    name: "a results sink may collide with a pin path again",
+    probe: "probe_bug.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
+  },
+  {
     name: "the assume-unchanged escape hatch is not checked",
     probe: "probe_bug.ts",
     file: "bug_pipeline.ts",

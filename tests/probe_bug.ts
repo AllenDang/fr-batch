@@ -116,6 +116,26 @@ threw(
   "pinPaths must be a non-empty array",
 );
 
+threw(
+  "a results sink that collides with a pin path is refused (it would unprotect that pin)",
+  () =>
+    loadQueue(
+      qdir(
+        baseQ([{ id: "x", plan: "fx/BUG_REPORT.md", kind: "bug", fixture: "fx" }], {
+          bugProtocol: { run: ["r {fixture}"], results: "{fixture}/test.yaml", pinPaths: ["{fixture}/test.yaml"] },
+        }),
+      ),
+    ),
+  "also a pinPaths entry",
+);
+ok(
+  "...but a sink merely INSIDE the fixture dir is fine (that is the normal shape)",
+  bugProtocolFor(
+    loadQueue(qdir(baseQ([{ id: "x", plan: "fx/BUG_REPORT.md", kind: "bug", fixture: "fx" }], { bugProtocol: { run: ["r"], results: "{fixture}/.r.jsonl" } }))),
+    { id: "x", plan: "fx/BUG_REPORT.md", kind: "bug", fixture: "fx" } as QueueItem,
+  ).results === "{fixture}/.r.jsonl",
+);
+
 // per-item override, and the null sentinel
 {
   const q = loadQueue(

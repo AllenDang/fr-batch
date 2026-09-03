@@ -155,6 +155,22 @@ function assertBugProtocol(q: Queue, item: QueueItem): void {
       `fr-batch: ${where} bugProtocol.pinPaths must be a non-empty array — it is the only gate between the fixer and the pin it is judged by`,
     );
   }
+  // The results sink is SUBTRACTED from the immutability set, because the runner rewrites it every
+  // pass. Pointing it AT a pin therefore switches that pin's protection off. A sink INSIDE the
+  // fixture directory is normal and fine (ANGE's own sink lives there) — only an exact collision
+  // with a pin path is refused, and it is refused here so a queue edit cannot arrange it for a
+  // later item either.
+  if (p.results !== null) {
+    const sub = (s: string) => s.replace(/\{(fixture|plan)\}/g, (_m, k: string) => (k === "fixture" ? (item.fixture ?? "") : item.plan));
+    const sink = sub(p.results);
+    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);
+    if (collision !== undefined) {
+      throw new Error(
+        `fr-batch: ${where} bugProtocol.results resolves to "${sink}", which is also a pinPaths entry. ` +
+          `The sink is excluded from the immutability check because every run rewrites it, so this would leave that pin unprotected.`,
+      );
+    }
+  }
   if (p.requirePin) {
     if (!p.pinPattern.trim()) throw new Error(`fr-batch: ${where} bugProtocol.requirePin is on but pinPattern is empty — nothing could ever satisfy it`);
     try {
