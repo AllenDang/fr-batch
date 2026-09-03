@@ -1,15 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { asEffort, modelLabel, normalizeChildConfig } from "./config.ts";
 import { archiveDir, historyPath, itemStateFiles, progressPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
 import { describeLive, drivers } from "./state.ts";
 import { STALE_RUNLOCK_MS, appendHistory, countHistory, loadHistory, loadProgress, loadQueue, statusOf } from "./store.ts";
-import { THINKING_EFFORTS, isDone } from "./types.ts";
-import type { HistoryEntry, QueueItem } from "./types.ts";
+import { ITEM_KINDS, THINKING_EFFORTS, isDone } from "./types.ts";
+import type { HistoryEntry, ItemKind, QueueItem } from "./types.ts";
 
 export interface AddArgs {
   plan: string;
   id?: string;
+  kind?: string;
+  fixture?: string;
   fr?: string;
   reads?: string[];
   verify?: string[];
@@ -42,6 +44,33 @@ export function addItem(cwd: string, args: AddArgs): string {
   const id = args.id ?? idFromPlan(args.plan);
   if (q.items.some((i) => i.id === id)) return `fr-batch: refused — an item with id "${id}" is already queued.`;
   if (args.after && args.before) return "fr-batch: refused — pass at most one of after/before.";
+  if (args.kind !== undefined && !ITEM_KINDS.includes(args.kind as ItemKind)) {
+    return `fr-batch: refused — kind "${args.kind}" is not a pipeline. Use one of ${ITEM_KINDS.join(", ")}.`;
+  }
+  const kind = (args.kind as ItemKind | undefined) ?? "fr";
+  if (kind === "fr" && args.fixture) return 'fr-batch: refused — fixture applies to kind:"bug" items only.';
+  if (kind === "bug") {
+    if (args.fr) return 'fr-batch: refused — a kind:"bug" item must not set fr; a bug report has no companion FR doc.';
+    // The fixture is what the runner is pointed at, so a wrong one is discovered by the runner
+    // several phases later. Checked here instead. NOT checked: that it contains any particular
+    // file — which files a runner needs is project knowledge this driver deliberately lacks.
+    const fixture = args.fixture ?? dirname(args.plan);
+    if (!existsSync(join(cwd, fixture))) {
+      return [
+        `fr-batch: refused — fixture not found: ${fixture}`,
+        args.fixture
+          ? "That is the fixture you passed."
+          : `Derived from the plan's directory. Pass fixture:"<path>" when the report does not live beside its pin.`,
+      ].join("\n");
+    }
+    if (q.bugProtocol === undefined) {
+      return [
+        `fr-batch: refused — queue.bugProtocol is not set, so a kind:"bug" item has no runner.`,
+        "This driver knows no build system: the command that runs one fixture, and how to read its",
+        "verdict, come from this repo. Add a bugProtocol to queue.json first.",
+      ].join("\n");
+    }
+  }
   // Not a refusal: re-queueing an archived id is legitimate (the PLAN grew a follow-up phase,
   // or the item is being redone). But it is never what you MEANT if you forgot it already ran,
   // and the queue itself no longer carries the evidence — so it is said out loud.
@@ -57,6 +86,8 @@ export function addItem(cwd: string, args: AddArgs): string {
   const item: QueueItem = {
     id,
     plan: args.plan,
+    ...(kind !== "fr" ? { kind } : {}),
+    ...(args.fixture ? { fixture: args.fixture } : {}),
     ...(args.fr ? { fr: args.fr } : {}),
     ...(args.reads?.length ? { reads: args.reads } : {}),
     ...(args.verify?.length ? { verify: args.verify } : {}),
