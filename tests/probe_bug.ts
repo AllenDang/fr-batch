@@ -14,16 +14,17 @@ import {
   buildRunCommand,
   changedPaths,
   citedFiles,
+  digestDrift,
   compareToBaseline,
   fixtureOf,
   parseResults,
+  pinDigest,
   runFixture,
   shellQuote,
   suppressedPins,
   substituteTokens,
-  underPath,
 } from "../bug_pipeline.ts";
-import { bugProtocolFor, loadQueue } from "../store.ts";
+import { bugProtocolFor, kindOf, loadQueue } from "../store.ts";
 import { BUG_PROTOCOL_DEFAULTS } from "../types.ts";
 import type { Baseline, BugProtocol, Queue, QueueItem } from "../types.ts";
 
@@ -71,10 +72,10 @@ threw(
   () => loadQueue(qdir(baseQ([{ id: "x", plan: "p.md", kind: "banana" }]))),
   "only fr, bug are pipelines",
 );
-ok(
-  "an item with no kind loads as fr and needs no bugProtocol",
-  loadQueue(qdir(baseQ([{ id: "x", plan: "p.md" }]))).items[0].kind === undefined,
-);
+{
+  const q = loadQueue(qdir(baseQ([{ id: "x", plan: "p.md" }])));
+  ok("an item with no kind loads as fr and needs no bugProtocol", kindOf(q.items[0]) === "fr" && q.items[0].kind === undefined);
+}
 threw(
   "a bug item with no protocol at any level is refused, naming bugProtocol",
   () => loadQueue(qdir(baseQ([{ id: "x", plan: "p.md", kind: "bug" }]))),
@@ -144,6 +145,7 @@ ok(
         [
           { id: "a", plan: "fx/BUG_REPORT.md", kind: "bug" },
           { id: "b", plan: "fx2/BUG_REPORT.md", kind: "bug", bugProtocol: { run: ["other {fixture}"], results: null } },
+          { id: "c", plan: "fx3/BUG_REPORT.md", kind: "bug", bugProtocol: { results: null } },
         ],
         { bugProtocol: { ...BUGP, requirePin: false } },
       ),
@@ -151,6 +153,10 @@ ok(
   );
   const a = bugProtocolFor(q, q.items[0]);
   const b = bugProtocolFor(q, q.items[1]);
+  const c = bugProtocolFor(q, q.items[2]);
+  // The row that actually exercises per-FIELD merging: item c overrides `results` ONLY, so a
+  // replace-instead-of-merge implementation loses the queue's `run` and this goes red.
+  ok("an item overriding one field INHERITS the others", c.run[0] === "run {fixture}" && c.results === null, JSON.stringify(c.run) + " " + String(c.results));
   ok("a bug item inherits the queue's protocol field by field", a.run[0] === "run {fixture}" && a.results === "{fixture}/.r.jsonl");
   ok("...and a per-item override replaces only the fields it names", b.run[0] === "other {fixture}");
   // THE ROW THIS SENTINEL EXISTS FOR. A field-by-field merge has no spelling for "absent", so
@@ -186,11 +192,14 @@ ok(
 ok("a path with a space is shell-quoted", shellQuote("a b") === "'a b'", shellQuote("a b"));
 ok("...and an embedded single quote cannot break out", shellQuote("a'b").startsWith("'a") && shellQuote("a'b").includes("\\'"), shellQuote("a'b"));
 {
-  // Not "one argument reaches the runner" measured through a fake exec — a fake sees one opaque
-  // string and cannot count arguments. A real shell can.
-  const cmd = buildRunCommand("printf '%s' $#", "tests/fix a", "p.md");
-  const argc = execFileSync("bash", ["-lc", `set -- ${shellQuote("tests/fix a")}; printf '%s' $#`], { encoding: "utf8" });
-  ok("a quoted fixture path arrives as ONE shell word", argc === "1", `$#=${argc} · ${cmd}`);
+  // Measured through a REAL shell running the command buildRunCommand actually produced. An earlier
+  // draft built the probe string from shellQuote directly and only printed buildRunCommand's output
+  // in the failure blurb, so removing the quoting from buildRunCommand left this green.
+  const cmd = buildRunCommand("set -- {fixture}; printf '%s' $#", "tests/fix a", "p.md");
+  const argc = execFileSync("bash", ["-lc", cmd], { encoding: "utf8" });
+  ok("the command buildRunCommand produced passes the path as ONE shell word", argc === "1", `$#=${argc} · ${cmd}`);
+  const two = execFileSync("bash", ["-lc", "set -- tests/fix a; printf '%s' $#"], { encoding: "utf8" });
+  ok("...and an unquoted one would have been two (so the row is not vacuous)", two === "2", `$#=${two}`);
 }
 
 {
@@ -261,9 +270,11 @@ const fakePi = (cwd: string, plan: FakeRun[]) => {
     stale.ok ? "reported ok" : stale.why.split("\n")[0],
   );
 
-  const { pi: pi2 } = fakePi(cwd, [{ code: 1, writes: '{"name":"a","passed":false}\n' }]);
+  const { pi: pi2, calls } = fakePi(cwd, [{ code: 1, writes: '{"name":"a","passed":false}\n' }]);
   const red = await runFixture(pi2, cwd, p, ".", "p.md", 1000, () => {});
   ok("a red run parses its sink", red.ok === true && red.exitCode === 1 && red.scan?.scenarios.a === false);
+  // The command that REACHED the shell, not just what substituteTokens returns in isolation.
+  ok("...and the runner received the substituted, quoted command", calls[0] === "run '.'", JSON.stringify(calls));
 
   // FIRST non-zero wins: keeping the last command's code lets a red build followed by `true` read
   // as exit 0, which disables the exit-code half of every gate.
@@ -353,11 +364,6 @@ const bl = (scenarios: Record<string, boolean>): Baseline => ({
   ok("an UNTRACKED add inside the fixture is seen (laundering via a second pin)", changed.includes("fx/extra.yaml"), changed.join(","));
   ok("an UNTRACKED new in-suite pin is seen (or requirePin reds every correct fix)", changed.includes("tests_test_new.cpp"), changed.join(","));
 
-  ok("underPath sees a file inside the fixture", underPath(repo, "fx/test.yaml", "fx"));
-  ok("...and the fixture dir itself", underPath(repo, "fx", "fx"));
-  ok("...and rejects a sibling that merely shares a prefix", !underPath(repo, "fxx/test.yaml", "fx"));
-  ok("...and rejects a path outside it", !underPath(repo, "src/a.cpp", "fx"));
-
   // A tracked pin whose changes git has been told to stop reporting is as unprotected as an
   // untracked one: `--porcelain` AND `diff HEAD` both go silent, and `git add -A` does not stage
   // the edit either — so the item would commit green with the defect intact and no record.
@@ -367,6 +373,54 @@ const bl = (scenarios: Record<string, boolean>): Baseline => ({
   ok("assume-unchanged on the pin IS detected", supp.length === 1 && supp[0].includes("fx/test.yaml"), supp.join(","));
   ok("...and neither ordinary probe can see the edit it hides", !(await changedPaths(realPi, repo)).includes("fx/test.yaml"));
   execFileSync("git", ["update-index", "--no-assume-unchanged", "fx/test.yaml"], { cwd: repo });
+
+  // pinDigest is what actually protects the pin, and it must be blind to every git-side trick.
+  execFileSync("git", ["checkout", "-q", "--", "fx/test.yaml"], { cwd: repo });
+  execFileSync("bash", ["-lc", `cd ${repo} && rm -f fx/extra.yaml tests_test_new.cpp`]);
+  const d0 = await pinDigest(realPi, repo, ["fx"]);
+  ok("a digest covers every file under the pin", Object.keys(d0).sort().join(",") === "fx/BUG_REPORT.md,fx/test.yaml", Object.keys(d0).join(","));
+  ok("...and skips the dot-file sink inside it", !Object.keys(d0).some((k) => k.includes(".r.jsonl")));
+  ok("an unchanged pin drifts not at all", digestDrift(d0, await pinDigest(realPi, repo, ["fx"])).length === 0);
+
+  writeFileSync(join(repo, "fx", "test.yaml"), "assert: x == 0\n", "utf8");
+  execFileSync("git", ["update-index", "--assume-unchanged", "fx/test.yaml"], { cwd: repo });
+  execFileSync("bash", ["-lc", `cd ${repo} && echo 'test.yaml' >> .git/info/exclude`]);
+  const drifted = digestDrift(d0, await pinDigest(realPi, repo, ["fx"]));
+  ok(
+    "a content digest sees an edit that assume-unchanged AND .git/info/exclude both hide",
+    drifted.length === 1 && drifted[0] === "fx/test.yaml (modified)",
+    drifted.join(","),
+  );
+  ok("...while the diff-based probe is blind to it", !(await changedPaths(realPi, repo)).includes("fx/test.yaml"));
+  execFileSync("git", ["update-index", "--no-assume-unchanged", "fx/test.yaml"], { cwd: repo });
+  execFileSync("bash", ["-lc", `cd ${repo} && : > .git/info/exclude && git checkout -q -- fx/test.yaml`]);
+
+  execFileSync("bash", ["-lc", `cd ${repo} && echo added > fx/second_pin.yaml`]);
+  ok("an ADDED file under the pin is drift", digestDrift(d0, await pinDigest(realPi, repo, ["fx"])).join() === "fx/second_pin.yaml (added)");
+  execFileSync("bash", ["-lc", `cd ${repo} && rm fx/second_pin.yaml && git mv fx/test.yaml fx/renamed.yaml`]);
+  const renamed = digestDrift(d0, await pinDigest(realPi, repo, ["fx"]));
+  ok("a RENAME out of the pin's name is drift both ways", renamed.includes("fx/test.yaml (removed)") && renamed.includes("fx/renamed.yaml (added)"), renamed.join(","));
+  execFileSync("bash", ["-lc", `cd ${repo} && git mv fx/renamed.yaml fx/test.yaml`]);
+
+  // A SYMLINKED pin: the bytes live outside every pathspec, so a path-prefix test never sees the
+  // edit. Only realpath-then-hash does. (The e2e drives the full attack; this pins the primitive.)
+  execFileSync("bash", ["-lc", `cd ${repo} && mkdir -p out && cp fx/test.yaml out/real.yaml && rm fx/test.yaml && ln -s ../out/real.yaml fx/test.yaml`]);
+  const dLink = await pinDigest(realPi, repo, ["fx"]);
+  ok("a digest reads THROUGH a symlinked pin", dLink["fx/test.yaml"] === d0["fx/test.yaml"], `${dLink["fx/test.yaml"]} vs ${d0["fx/test.yaml"]}`);
+  writeFileSync(join(repo, "out", "real.yaml"), "assert: x == 0\n", "utf8");
+  ok(
+    "...and an edit made through the link IS drift",
+    digestDrift(dLink, await pinDigest(realPi, repo, ["fx"])).join() === "fx/test.yaml (modified)",
+    digestDrift(dLink, await pinDigest(realPi, repo, ["fx"])).join(","),
+  );
+  execFileSync("bash", ["-lc", `cd ${repo} && rm fx/test.yaml && cp out/real.yaml fx/test.yaml && rm -rf out && git checkout -q -- fx/test.yaml 2>/dev/null || true`]);
+
+  // A staged rename emits `XY new\0old\0`, and the second record has NO status prefix — slicing
+  // three characters off it yields a different path entirely.
+  execFileSync("bash", ["-lc", `cd ${repo} && git mv fx/BUG_REPORT.md fx/MOVED.md`]);
+  const ren = await changedPaths(realPi, repo);
+  ok("a rename reports BOTH paths, neither corrupted", ren.includes("fx/MOVED.md") && ren.includes("fx/BUG_REPORT.md"), ren.join(","));
+  execFileSync("bash", ["-lc", `cd ${repo} && git mv fx/MOVED.md fx/BUG_REPORT.md`]);
 
   const cited = citedFiles(readFileSync(join(repo, "fx", "BUG_REPORT.md"), "utf8"));
   ok("file:line citations are extracted from the report", cited.sort().join(",") === "src/a.cpp,src/b.h", cited.join(","));

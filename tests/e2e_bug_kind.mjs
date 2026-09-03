@@ -322,5 +322,77 @@ reset();
 }
 reset();
 
+// ---------------------------------------------------------------------------
+console.log("\n--- 10. LAUNDERING via a commit: the fixer commits its own pin edit");
+reset();
+{
+  let phase = "red";
+  const h = harness({
+    mode: () => phase,
+    fixer: () => {
+      // Every diff-shaped check reports a CLEAN tree after this: the edit is in HEAD.
+      const f = join(REPO, FX, "test.yaml");
+      writeFileSync(f, readFileSync(f, "utf8").replace("!=", "=="), "utf8");
+      execFileSync("git", ["add", "-A"], { cwd: REPO });
+      execFileSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", "commit", "-qm", "sneaky"], { cwd: REPO });
+      phase = "fixed";
+    },
+  });
+  const out = await run(h);
+  ok("the item is BLOCKED", progress()["x2-move-axis"]?.status === "blocked", progress()["x2-move-axis"]?.status ?? "(none)");
+  ok("...because HEAD moved", out.includes("HEAD moved"), out.split("\n").find((l) => l.includes("HEAD")) ?? "");
+  ok("...naming both shas", /[0-9a-f]{9} -> [0-9a-f]{9}/.test(out), out.split("\n").find((l) => l.includes("->")) ?? "");
+}
+reset();
+
+// ---------------------------------------------------------------------------
+console.log("\n--- 11. LAUNDERING via a symlink: the pin is reached through a link");
+reset();
+{
+  // The link is committed, so it is part of the pin as captured. Editing through it changes the
+  // TARGET, which a path-prefix test never looks at.
+  execFileSync("bash", ["-lc", `cd ${REPO} && mkdir -p real && cp ${FX}/test.yaml real/pin.yaml && rm ${FX}/test.yaml && ln -s ../../../real/pin.yaml ${FX}/test.yaml`]);
+  sh("add", "-A");
+  sh("-c", "user.email=x@x", "-c", "user.name=x", "commit", "-qm", "pin behind a symlink");
+  const linkBase = sh("rev-parse", "HEAD").trim();
+  let phase = "red";
+  const h = harness({
+    mode: () => phase,
+    fixer: () => {
+      const f = join(REPO, "real/pin.yaml");
+      writeFileSync(f, readFileSync(f, "utf8").replace("!=", "=="), "utf8");
+      phase = "fixed";
+    },
+  });
+  const out = await run(h);
+  ok("the item is BLOCKED", progress()["x2-move-axis"]?.status === "blocked", progress()["x2-move-axis"]?.status ?? "(none)");
+  ok("...because the pin's CONTENT changed, symlink or not", out.includes("changed the pin"), out.split("\n")[2] ?? "");
+  sh("reset", "-q", "--hard", `${linkBase}~1`);
+  sh("clean", "-qfd");
+}
+reset();
+
+// ---------------------------------------------------------------------------
+console.log("\n--- 12. the diff-blinding tricks a content hash does not consult");
+reset();
+{
+  let phase = "red";
+  const h = harness({
+    mode: () => phase,
+    fixer: () => {
+      // Silence the untracked half AND the tracked half, three ways at once.
+      execFileSync("bash", ["-lc", `cd ${REPO} && echo 'test.yaml' >> .git/info/exclude && git config status.showUntrackedFiles no`]);
+      const f = join(REPO, FX, "test.yaml");
+      writeFileSync(f, readFileSync(f, "utf8").replace("!=", "=="), "utf8");
+      phase = "fixed";
+    },
+  });
+  const out = await run(h);
+  ok("the item is BLOCKED", progress()["x2-move-axis"]?.status === "blocked", progress()["x2-move-axis"]?.status ?? "(none)");
+  ok("...because a content hash consults no git configuration", out.includes("changed the pin"), out.split("\n")[2] ?? "");
+  execFileSync("bash", ["-lc", `cd ${REPO} && git config --unset status.showUntrackedFiles; : > .git/info/exclude`]);
+}
+reset();
+
 console.log(fails === 0 ? "\ne2e: all pass" : `\ne2e: ${fails} FAILURE(S)`);
 process.exit(fails === 0 ? 0 : 1);

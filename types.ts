@@ -182,6 +182,17 @@ export interface Baseline {
   exitCode: number;
   /** scenario mode only: name -> passed, as captured. Empty in exit mode. */
   scenarios: Record<string, boolean>;
+  /**
+   * HEAD when the pin was captured. A fixer that COMMITS its own edit moves HEAD, and every
+   * diff-against-HEAD check then reports a clean tree — so the commit itself has to be noticed.
+   */
+  head: string;
+  /**
+   * Content hash of every file under the pin paths, at capture. Compared byte-for-byte at the
+   * gate. A hash cannot be silenced by `assume-unchanged`, by `.git/info/exclude`, by a commit,
+   * or by a rename, each of which defeats a diff.
+   */
+  pins: Record<string, string>;
 }
 
 export interface Queue {

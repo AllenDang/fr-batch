@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { baselinePath, siblingsPath, writeAtomic } from "./paths.ts";
 import { readsBlock, rulesBlock } from "./prompts.ts";
 import { NetworkPause, runChildResilient } from "./resilience.ts";
@@ -197,29 +197,91 @@ export function compareToBaseline(baseline: Baseline, after: Record<string, bool
 
 /** Every path git reports as changed: tracked edits AND untracked additions. */
 export async function changedPaths(pi: ExtensionAPI, cwd: string): Promise<string[]> {
-  // `git status --porcelain` is the whole point. `git diff --name-only HEAD` reports tracked
-  // staged+unstaged changes ONLY, which loses both halves that matter here: a fixer ADDING a file
-  // inside the fixture dir (a second pin the runner picks up), and the new in-suite test that
-  // `requirePin` exists to demand — untracked until the driver's own `git add -A`, so a
-  // tracked-only diff can never contain it and requirePin would red every correct fix.
-  // --porcelain also excludes gitignored paths for free, which is what keeps the results sink
-  // (rewritten by every run) out of the immutability check.
+  // Used for `requirePin` and `requireMechanismTouch`, which ask "what did the fix touch?" — a
+  // question about the diff. Pin IMMUTABILITY does NOT use this: see pinDigest, which asks a
+  // different question that no git configuration can answer wrongly.
   const r = await pi.exec("git", ["status", "--porcelain", "-z"], { cwd });
-  return (r.stdout ?? "")
-    .split("\0")
-    .filter((s) => s.length > 3)
-    .map((s) => s.slice(3))
-    // A rename is `XY old\0new`; the halves arrive as separate records, so both are inspected.
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const recs = (r.stdout ?? "").split("\0").filter((s) => s.length > 0);
+  const out: string[] = [];
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i];
+    if (rec.length < 4) continue;
+    const xy = rec.slice(0, 2);
+    out.push(rec.slice(3));
+    // A rename or copy emits `XY new\0old\0`: the second record is a BARE path with no status
+    // prefix, so slicing three characters off it would corrupt it into a different path.
+    if ((xy[0] === "R" || xy[0] === "C") && i + 1 < recs.length) out.push(recs[++i]);
+  }
+  return out.map((s) => s.trim()).filter(Boolean);
 }
 
-/** True when `child` is `parent` or sits underneath it, after symlink resolution. */export function underPath(cwd: string, child: string, parent: string): boolean {
-  const abs = (p: string) => (isAbsolute(p) ? p : resolve(cwd, p));
-  // realpath-free but symlink-safe enough for the containment test: the caller resolves the
-  // fixture with realpathSync when it exists, so an unresolved link cannot hide edits under it.
-  const rel = relative(abs(parent), abs(child));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+/**
+ * A content digest of every file under the pin paths.
+ *
+ * THIS, NOT A DIFF, IS WHAT PROTECTS THE PIN. Five independent ways exist to make git stop
+ * reporting a change to a tracked file, and every one was reachable by the single child this gate
+ * exists to constrain:
+ *   * `git update-index --assume-unchanged` / `--skip-worktree` silences status AND diff;
+ *   * `.git/info/exclude`, a nested `.gitignore`, `core.excludesFile` or
+ *     `status.showUntrackedFiles=no` silences the untracked half;
+ *   * a commit made by the fixer moves HEAD, so a diff against HEAD sees a clean tree;
+ *   * a staged rename moves the file out of the pathspec entirely;
+ *   * a symlinked pin puts the real bytes outside every pathspec, since `git diff -- <link>` does
+ *     not traverse into the target.
+ * A hash of the bytes on disk answers none of those questions and cannot be configured.
+ *
+ * Walked on the FILESYSTEM rather than through the index, so an added file under a fixture appears
+ * as a new key and a deleted one as a missing key.
+ *
+ * The symlink case is closed by `git hash-object`, which reads THROUGH a link (measured: hashing a
+ * link and hashing its target give the same object id, and editing the target changes it). An
+ * earlier draft also called `realpathSync` here and the comment claimed that was the defence; the
+ * mutation suite showed removing it broke nothing, because `statSync` follows links too. It is gone
+ * rather than kept as a second belt with a false label.
+ */
+export async function pinDigest(pi: ExtensionAPI, cwd: string, pins: string[]): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const walk = (rel: string): string[] => {
+    const abs = join(cwd, rel);
+    let st;
+    try {
+      // statSync, not lstatSync: a symlinked pin must be followed, not described.
+      st = statSync(abs);
+    } catch {
+      return [];
+    }
+    if (st.isFile()) return [rel];
+    if (!st.isDirectory()) return [];
+    const kids: string[] = [];
+    for (const e of readdirSync(abs)) {
+      // Dot-entries are skipped so a runner's own sink and cache stay out of the digest without
+      // this driver naming any project's conventions.
+      if (e.startsWith(".")) continue;
+      kids.push(...walk(`${rel}/${e}`));
+    }
+    return kids;
+  };
+  const files = [...new Set(pins.flatMap(walk))].sort();
+  if (files.length === 0) return out;
+  // `git hash-object` reads the WORKING TREE, not the index, so nothing under .git can change the
+  // answer. Batched because a fixture can hold dozens of files.
+  const r = await pi.exec("git", ["hash-object", "--", ...files], { cwd });
+  const hashes = (r.stdout ?? "").trim().split("\n");
+  files.forEach((f, i) => {
+    out[f] = hashes[i] ?? "missing";
+  });
+  return out;
+}
+
+/** Paths whose content moved between two digests, in either direction. */
+export function digestDrift(before: Record<string, string>, after: Record<string, string>): string[] {
+  const drift: string[] = [];
+  for (const [f, h] of Object.entries(before)) {
+    if (!Object.hasOwn(after, f)) drift.push(`${f} (removed)`);
+    else if (after[f] !== h) drift.push(`${f} (modified)`);
+  }
+  for (const f of Object.keys(after)) if (!Object.hasOwn(before, f)) drift.push(`${f} (added)`);
+  return drift;
 }
 
 /**
@@ -479,6 +541,8 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
       plan: item.plan,
       exitCode: run.exitCode,
       scenarios: run.scan?.scenarios ?? {},
+      head: (await pi.exec("git", ["rev-parse", "HEAD"], { cwd })).stdout?.trim() ?? "",
+      pins: await pinDigest(pi, cwd, pins),
     };
     writeAtomic(bpath, `${JSON.stringify(baseline, null, 2)}\n`);
     log(
@@ -585,9 +649,27 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
         ),
       };
     }
-    const changed = await changedPaths(pi, cwd);
     const sink = proto.results === null ? null : substituteTokens(proto.results, fixture, item.plan);
-    const touchedPin = changed.filter((c) => c !== sink && pins.some((p) => underPath(cwd, c, p)));
+    // HEAD FIRST: a fixer that committed its own edit leaves a clean working tree, so every
+    // diff-shaped check downstream would correctly report that nothing is modified.
+    const headNow = (await pi.exec("git", ["rev-parse", "HEAD"], { cwd })).stdout?.trim() ?? "";
+    if (baseline.head && headNow !== baseline.head) {
+      return {
+        outcome: "return",
+        text: ctx.block(
+          [
+            `HEAD moved while this item was being fixed: ${baseline.head.slice(0, 9)} -> ${headNow.slice(0, 9)}`,
+            "",
+            "The driver is the only thing that may commit during an item. A commit made by the fix leaves a",
+            "clean tree, so nothing else here could tell that the pin had been touched.",
+            "",
+            `Inspect \`git log ${baseline.head.slice(0, 9)}..HEAD\`, then start the item again:`,
+            `  fr_batch action "reset", only: "${item.id}"`,
+          ].join("\n"),
+        ),
+      };
+    }
+    const touchedPin = digestDrift(baseline.pins, await pinDigest(pi, cwd, pins)).filter((d) => d.split(" ")[0] !== sink);
     if (touchedPin.length > 0) {
       return {
         outcome: "return",
@@ -657,6 +739,28 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
         };
       }
       const bad = cmp.unfixed.length + cmp.regressions.length + cmp.missing.length;
+      // GATE RULE B, the mirror of the cheat rule above and the one the plan specified but an
+      // earlier draft omitted. Every baseline scenario passes and the runner still refuses to exit
+      // green: that is a check living OUTSIDE the scenario record — a leak detector, a watchdog, a
+      // teardown assertion. An incomplete verdict, not an unfixed defect, so it spends no round;
+      // reporting it as red would send a fixer after nothing, and reporting it as a cheat would
+      // accuse it of tampering.
+      if (bad === 0 && afterVerdict !== "green") {
+        return {
+          outcome: "return",
+          text: ctx.block(
+            [
+              `Every scenario the baseline captured now passes, but the pin still exits ${after.exitCode}.`,
+              "",
+              "The exit code is reporting something its own per-scenario record does not. That is an",
+              "incomplete verdict rather than an unfixed defect, so no fix round is spent on it.",
+              "",
+              "Either bring that condition into the pin as a scenario, or map its exit code in",
+              "bugProtocol.greenExit if it is not a failure at all.",
+            ].join("\n"),
+          ),
+        };
+      }
       if (bad > 0) {
         lastRed = [
           ...(cmp.unfixed.length ? [`Still failing (${cmp.unfixed.length}):`, ...cmp.unfixed.map((n) => `  - ${n}`)] : []),
@@ -689,6 +793,10 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
     }
     log("  gate: the pin is GREEN");
 
+    // The diff, for the two gates that ask "what did the fix touch?" — a different question from
+    // "did the pin change", which pinDigest answered above without consulting git configuration.
+    const changed = await changedPaths(pi, cwd);
+
     // (c) no regression in the project's own suite
     const v = await ctx.runVerify(pi, cwd, verifyCmds, q.verifyTimeoutMs, log);
     if (!v.ok) {
@@ -716,7 +824,7 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
     if (proto.requireMechanismTouch) {
       if (cited.length === 0) {
         log("  (requireMechanismTouch: the report names no file:line, so nothing to check)");
-      } else if (!changed.some((c) => cited.some((f) => c === f || c.endsWith(`/${f}`)))) {
+      } else if (!changed.some((c) => cited.some((f) => c === f || (f.includes("/") && c.endsWith(`/${f}`))))) {
         lastRed = [
           "The fix touched none of the files the report's root cause cites:",
           ...cited.slice(0, 10).map((f) => `  - ${f}`),

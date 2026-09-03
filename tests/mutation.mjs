@@ -25,6 +25,24 @@ const MUTATIONS = [
     mutate: (t) => t.replace('const r = await pi.exec("git", ["status", "--porcelain", "-z"], { cwd });', 'const r = await pi.exec("git", ["diff", "--name-only", "-z", "HEAD"], { cwd });'),
   },
   {
+    name: "the pin digest reads the index instead of the working tree",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('const r = await pi.exec("git", ["hash-object", "--", ...files], { cwd });', 'const r = await pi.exec("git", ["rev-parse", ...files.map((f) => `HEAD:${f}`)], { cwd });'),
+  },
+  {
+    name: "digestDrift stops reporting an added file under the pin",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('  for (const f of Object.keys(after)) if (!Object.hasOwn(before, f)) drift.push(`${f} (added)`);\n', ""),
+  },
+  {
+    name: "a rename record's bare second path is sliced like a status line",
+    probe: "probe_bug.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('    if ((xy[0] === "R" || xy[0] === "C") && i + 1 < recs.length) out.push(recs[++i]);\n', ""),
+  },
+  {
     name: "a results sink may collide with a pin path again",
     probe: "probe_bug.ts",
     file: "store.ts",
