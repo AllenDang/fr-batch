@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { runBatch } from "./driver.ts";
 import { runlockPath } from "./paths.ts";
 import { sleep } from "./resilience.ts";
-import { LOG_TAIL_LINES, describeLive, drivers, elapsedLabel, finishedRuns, lastLogLine } from "./state.ts";
+import { LOG_TAIL_LINES, describeLive, drivers, elapsedLabel, finishedRuns, isCurrentGeneration, lastLogLine, nextGeneration } from "./state.ts";
 import type { LiveDriver } from "./state.ts";
 import { RUNLOCK_TOUCH_MS, touchRunlock } from "./store.ts";
 import type { ItemKind, Log } from "./types.ts";
@@ -29,6 +29,14 @@ export function classifyResult(text: string): { failed: boolean; level: "info" |
  */
 export function finishDriver(pi: ExtensionAPI, ctx: ExtensionContext, cwd: string, d: LiveDriver, text: string, failed: boolean): void {
   if (d.touch) clearInterval(d.touch);
+  // A SUPERSEDED driver reports nothing. It may still be holding numbers from a queue that has since
+  // been edited, or naming an item the operator has removed — and its message would arrive as if it
+  // described the run they are actually watching. It is not silently dropped: the entry is logged, so
+  // a late completion is still discoverable, just not announced.
+  if (!isCurrentGeneration(cwd, d)) {
+    pi.appendEntry("fr-batch", { event: "driver-finished-superseded", generation: d.generation, failed, head: text.split("\n")[0] });
+    return;
+  }
   drivers.delete(cwd);
   const elapsedMs = Date.now() - d.startedAt;
   finishedRuns.set(cwd, { at: Date.now(), elapsedMs, text, failed });
@@ -78,6 +86,7 @@ export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts:
   }
 
   const d: LiveDriver = {
+    generation: nextGeneration(cwd),
     startedAt: Date.now(),
     abort: new AbortController(),
     stopRequested: false,

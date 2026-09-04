@@ -24,12 +24,13 @@ export const RUNLOCK_TOUCH_MS = 60 * 1000;
  * refuses to default because an empty gate silently passes everything; a missing timeout has a
  * safe, statable value, and a fresh install that works is worth more than a lecture.
  */
-function budget(field: "maxFixRounds" | "childTimeoutMs" | "verifyTimeoutMs", raw: unknown): number {
+function budget(field: "maxFixRounds" | "maxTotalRounds" | "childTimeoutMs" | "verifyTimeoutMs", raw: unknown): number {
   if (raw === undefined || raw === null) return QUEUE_BUDGET_DEFAULTS[field];
-  const min = field === "maxFixRounds" ? 0 : 1;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < min || (field === "maxFixRounds" && !Number.isInteger(raw))) {
+  const min = field === "maxFixRounds" ? 0 : field === "maxTotalRounds" ? 1 : 1;
+  const rounds = field === "maxFixRounds" || field === "maxTotalRounds";
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < min || (rounds && !Number.isInteger(raw))) {
     throw new Error(
-      `fr-batch: queue.${field} must be a ${field === "maxFixRounds" ? "whole number >= 0" : "positive number of milliseconds"}, ` +
+      `fr-batch: queue.${field} must be a ${rounds ? `whole number >= ${min}` : "positive number of milliseconds"}, ` +
         `got ${JSON.stringify(raw)}. Remove it to accept the default (${QUEUE_BUDGET_DEFAULTS[field]}).`,
     );
   }
@@ -47,6 +48,7 @@ export function loadQueue(cwd: string): Queue {
   const seen = new Set<string>();
   // Filled in place, so every `q.childTimeoutMs` read downstream is a number by construction.
   q.maxFixRounds = budget("maxFixRounds", q.maxFixRounds);
+  q.maxTotalRounds = budget("maxTotalRounds", q.maxTotalRounds);
   q.childTimeoutMs = budget("childTimeoutMs", q.childTimeoutMs);
   q.verifyTimeoutMs = budget("verifyTimeoutMs", q.verifyTimeoutMs);
   assertChildConfig("queue", { model: q.defaultModel, thinking: q.defaultThinking });
@@ -243,6 +245,11 @@ export function setProgress(cwd: string, id: string, patch: Partial<ProgressEntr
     updatedAt: new Date().toISOString(),
     ...(patch.note !== undefined ? { note: patch.note } : all[id]?.note ? { note: all[id].note } : {}),
     ...(patch.sha !== undefined ? { sha: patch.sha } : all[id]?.sha ? { sha: all[id].sha } : {}),
+    // Meaningful only while blocked, for the same reason the pause block below is scoped: a stale
+    // scope on a running item would let a plain `run` re-enter a verdict it cannot re-judge.
+    ...(status === "blocked"
+      ? { ...(patch.blockScope !== undefined ? { blockScope: patch.blockScope } : all[id]?.blockScope ? { blockScope: all[id].blockScope } : {}) }
+      : {}),
     // Pause fields are meaningful only while paused: any other status clears them,
     // so a stale childId can never be revived into the wrong phase.
     ...(status === "paused"
@@ -425,18 +432,65 @@ export function pruneItemArtifacts(cwd: string, id: string, log: Log): void {
 // single-driver interlock
 // ---------------------------------------------------------------------------
 
+/**
+ * Who holds the run lock, and whether that process is still alive.
+ *
+ * THE PID WAS ALWAYS ON DISK AND LIVENESS WAS DECIDED BY THE FILE'S AGE. A fact was available and a
+ * fifteen-minute heuristic was used instead, so after a driver died — a crash, a `/reload`, a quit —
+ * `reset` and `archive` refused for a quarter of an hour and the operator had to delete the file by
+ * hand. Reported from a real batch.
+ *
+ * `process.kill(pid, 0)` sends no signal; it only asks whether the pid can be signalled.
+ *   ESRCH   no such process         -> dead, reclaimable
+ *   EPERM   alive, owned by someone else (another user, another container namespace)
+ *           -> treated as ALIVE, which is the safe direction: refusing is recoverable, and two
+ *              drivers in one tree is not.
+ * Age survives only for a lock with no parseable pid — an older format, or a hand-written file — and
+ * is no longer load-bearing.
+ */
+export function lockHolder(cwd: string): { text: string; pid: number | null; alive: boolean; ageMs: number } | null {
+  const p = runlockPath(cwd);
+  if (!existsSync(p)) return null;
+  let text = "unknown";
+  try {
+    text = readFileSync(p, "utf8").trim();
+  } catch {
+    /* a lock we cannot read is still a lock */
+  }
+  let ageMs = 0;
+  try {
+    ageMs = Date.now() - statSync(p).mtimeMs;
+  } catch {
+    /* ignore */
+  }
+  const m = /\bpid\s+(\d+)\b/.exec(text);
+  const pid = m ? Number(m[1]) : null;
+  if (pid === null) return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };
+  // Our own pid means the extension reloaded inside this process: the loop that held it is gone, so
+  // the lock is ours to reclaim. Without this a reload could never start another run.
+  if (pid === process.pid) return { text, pid, alive: false, ageMs };
+  let alive = true;
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    alive = (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  return { text, pid, alive, ageMs };
+}
+
+/** One line describing a held lock, for a refusal message. */
+export function describeLock(h: { text: string; pid: number | null; alive: boolean; ageMs: number }): string {
+  const age = `${Math.round(h.ageMs / 1000)}s old`;
+  if (h.pid === null) return `${h.text} (no pid in the lock; judged by age, ${age})`;
+  return `${h.text} (pid ${h.pid} is ${h.alive ? "RUNNING" : "gone"}, ${age})`;
+}
+
 export function acquireRunlock(cwd: string): { release: () => void } | { held: string } {
   const p = runlockPath(cwd);
-  if (existsSync(p)) {
-    const age = Date.now() - statSync(p).mtimeMs;
-    let holder = "unknown";
-    try {
-      holder = readFileSync(p, "utf8").trim();
-    } catch {
-      /* ignore */
-    }
-    if (age < STALE_RUNLOCK_MS) return { held: holder };
-    rmSync(p, { force: true }); // stale
+  const holder = lockHolder(cwd);
+  if (holder) {
+    if (holder.alive) return { held: describeLock(holder) };
+    rmSync(p, { force: true }); // the holder is gone, whatever the file's age says
   }
   mkdirSync(dirname(p), { recursive: true });
   try {

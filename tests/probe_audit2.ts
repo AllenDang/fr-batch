@@ -148,17 +148,20 @@ const gap = (id: string): AuditGap => ({ id, kind: "branch", what: "w", why_miss
   ok("reset is refused while a driver runs here", /refused/i.test(refused) && /stop/.test(refused), refused.split("\n")[0]);
   ok("...and the progress entry survives", loadProgress(repo).x?.status === "implementing");
   drivers.delete(repo);
-  // A FRESH run lock means another session may be driving, same hazard, same refusal.
-  writeFileSync(join(repo, ".pi/fr-batch/.run.lock"), "pid 999 since now\n");
+  // A lock naming a LIVE process means another session may be driving: same hazard, same refusal.
+  // Liveness is the test now, not the file's age — the pid was always in the lock and age was a
+  // fifteen-minute guess that left a crashed driver's item unclearable for a quarter of an hour.
+  writeFileSync(join(repo, ".pi/fr-batch/.run.lock"), `pid ${process.ppid} since now\n`);
   const lockRefused = resetItem(repo, "x");
-  ok("reset is refused while a fresh run lock is present", /refused/i.test(lockRefused) && /run lock/.test(lockRefused), lockRefused.split("\n")[0]);
+  ok("reset is refused while the lock names a LIVE pid", /refused/i.test(lockRefused) && /run lock/.test(lockRefused), lockRefused.split("\n")[0]);
+  ok("...naming the pid and that it is running", /RUNNING/.test(lockRefused), lockRefused.split("\n")[0]);
   ok("...and still nothing was deleted", Boolean(loadProgress(repo).x));
-  // Stale lock (older than STALE_RUNLOCK_MS) must NOT block a reset, or a crashed driver would
-  // leave the item unclearable for 15 minutes.
-  const old = new Date(Date.now() - 20 * 60 * 1000);
-  execFileSync("touch", ["-t", `${old.getFullYear()}${String(old.getMonth() + 1).padStart(2, "0")}${String(old.getDate()).padStart(2, "0")}${String(old.getHours()).padStart(2, "0")}${String(old.getMinutes()).padStart(2, "0")}`, join(repo, ".pi/fr-batch/.run.lock")]);
+  // A lock naming a DEAD pid must not block, however fresh the file is. `pid 2` on a mac/linux is
+  // either init's neighbour or absent; the probe uses a pid it just observed to be gone instead.
+  const deadPid = 2_000_000_000; // far above any pid_max
+  writeFileSync(join(repo, ".pi/fr-batch/.run.lock"), `pid ${deadPid} since now\n`);
   const done = resetItem(repo, "x");
-  ok("a STALE lock does not block a reset", /reset "x"/.test(done), done.split("\n")[0]);
+  ok("a lock naming a DEAD pid does not block a reset, however fresh", /reset "x"/.test(done), done.split("\n")[0]);
   ok("...and the entry is gone", !loadProgress(repo).x);
 }
 

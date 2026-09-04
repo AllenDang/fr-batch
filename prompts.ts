@@ -66,7 +66,7 @@ Report at the end: files created, files edited, the matrix rows you implemented,
 you could NOT implement with the reason.${noteBlock(note)}`;
 }
 
-export function auditTask(item: QueueItem, contract: string, ledger: Ledger): string {
+export function auditTask(item: QueueItem, contract: string, ledger: Ledger, verifyCmds: string[] = [], acceptance = ""): string {
   const adjudicated = Object.entries(ledger)
     .filter(([, e]) => e.state !== "open")
     .map(([id, e]) => `- [${id} · ${e.state}] ${e.what}${e.state === "rejected" && e.reason ? `\n  fixer's reason for rejecting: ${e.reason}` : ""}`)
@@ -124,7 +124,23 @@ For each asserted behaviour ask: if I invert this value or comment out that line
 fail? If the answer is no — or if it is a magnitude check where the bug would be a sign error —
 it is a gap. Report it with kind "vacuous".
 
-You are NOT reviewing code quality, architecture, or style. Only test completeness.
+${
+    verifyCmds.length
+      ? `## Second, smaller job: does the project's GATE match what the PLAN says acceptance is?
+
+These are the exact commands this item must pass, resolved from the queue:
+
+${verifyCmds.map((c) => `- \`${c}\``).join("\n")}
+${acceptance ? `\nAnd this is what the PLAN says acceptance is:\n\n${acceptance.trim()}\n` : ""}
+Report any DISAGREEMENT in \`verify_findings\`. The canonical case is an assertion encoding a
+pre-change value — a count or a code that was true before this FR and is asserted as if it still is.
+Nobody reviews these commands today, so a wrong one is unfalsifiable.
+
+This is NON-BLOCKING and it is NOT a gap: the verify block belongs to the operator, not to this item.
+Empty is a fine answer, and so is "cannot tell from the PLAN".
+
+` : ""
+  }You are NOT reviewing code quality, architecture, or style. Only test completeness.
 You MUST NOT modify any file.
 
 Return your verdict by calling structured_output with the required schema. "complete" means every

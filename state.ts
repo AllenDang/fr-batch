@@ -37,6 +37,16 @@ export interface LiveDriver {
   only?: string;
   /** Which pipeline is live, so two projects' status lines are distinguishable. */
   kind?: ItemKind;
+  /**
+   * Which start this driver was. A superseded driver must not report.
+   *
+   * The extension is an in-process loop, and a `/reload` replaces the module while the old loop's
+   * timers, its run-status poller and its `sendMessage` are all still live. Reported from a real
+   * batch: a completion arrived naming a `childTimeoutMs` from a queue that had since been edited,
+   * and a `STOPPED at <id>` for an item the operator had already removed. Every one of those came
+   * from a driver nobody had told to stop caring.
+   */
+  generation: number;
   /** Tail of the driver's own log, for `status`. progress.json remains the durable record. */
   lines: string[];
   settled: Promise<void>;
@@ -51,6 +61,26 @@ export interface FinishedRun {
 }
 
 export const drivers = new Map<string, LiveDriver>();
+
+/**
+ * Monotonic per-cwd start counter. Bumped by startDriver, compared by finishDriver.
+ *
+ * Module-level, so it survives for as long as the module does — which is exactly the scope that
+ * matters: a reload gets a fresh module and a fresh counter, and the old module's drivers can no
+ * longer match the new one's current generation.
+ */
+export const generations = new Map<string, number>();
+
+export function nextGeneration(cwd: string): number {
+  const g = (generations.get(cwd) ?? 0) + 1;
+  generations.set(cwd, g);
+  return g;
+}
+
+/** True when this driver is still the one this cwd's operator is waiting on. */
+export function isCurrentGeneration(cwd: string, d: LiveDriver): boolean {
+  return (generations.get(cwd) ?? 0) === d.generation;
+}
 export const finishedRuns = new Map<string, FinishedRun>();
 
 export function elapsedLabel(ms: number): string {  const s = Math.max(0, Math.round(ms / 1000));

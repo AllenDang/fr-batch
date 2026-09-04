@@ -229,7 +229,13 @@ export async function runChild(
     handle(raw);
   });
 
-  const timer = setTimeout(() => rejectDone(new Error(`WALLCLOCK: child exceeded ${timeoutMs}ms`)), timeoutMs + 60_000);
+  // The run id rides on the message because the driver cannot kill this child and the id is the only
+  // handle that works (`subagent interrupt <id>`). Without it an abandoned child had to be hunted by
+  // pid, whose parent is 1.
+  const timer = setTimeout(
+    () => rejectDone(new Error(`WALLCLOCK: child exceeded ${timeoutMs}ms${asyncId ? ` [run ${asyncId}]` : ""}`)),
+    timeoutMs + 60_000,
+  );
   const onAbort = () => rejectDone(new Error("aborted"));
   signal?.addEventListener("abort", onAbort, { once: true });
 

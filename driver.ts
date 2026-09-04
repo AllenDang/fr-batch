@@ -3,10 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runBugItem } from "./bug_pipeline.ts";
 import { childSpawnParams, effortUndeliverable, itemModelLabel, modelLabel, resolveChildConfig, sessionChildConfig } from "./config.ts";
-import { AUDIT_PARSE_RETRIES, freezeContract, loadLedger, parseFixReport, parseVerdict, partitionGaps, planTestGate, recordOutOfScope, saveLedger } from "./contract.ts";
+import { AUDIT_PARSE_RETRIES, extractAcceptanceSection, freezeContract, loadLedger, parseFixReport, parseVerdict, partitionGaps, planTestGate, readPlanText, recordOutOfScope, roundWasProductive, saveLedger } from "./contract.ts";
 import { contractPath, ledgerPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
 import { auditTask, fixTask, implementTask, noteBlock, readsBlock, rulesBlock } from "./prompts.ts";
-import { INTERCOM_DETACH_MARK, NetworkPause, formatAsk, runChildResilient } from "./resilience.ts";
+import { INTERCOM_DETACH_MARK, NetworkPause, classifyLaunchFailure, formatAsk, runChildResilient } from "./resilience.ts";
 import { makeRpc } from "./rpc.ts";
 import type { ChildOutcome } from "./rpc.ts";
 import { acquireRunlock, artifactDir, kindOf, loadProgress, loadQueue, pruneItemArtifacts, setProgress, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
@@ -293,13 +293,21 @@ export async function runBatch(
       }
       if (statusOf(progress, item.id) === "blocked" && (progress[item.id]?.note ?? "").length > 0) {
         const spec = kindOf(item) === "bug" ? "captured baseline" : "frozen contract";
-        if (opts.resumeBlocked && opts.only === item.id) {
+        const scope = progress[item.id]?.blockScope ?? "verdict";
+        // An `attempt`-scoped block is re-entered by a PLAIN run: nothing about the contract or the
+        // phase was invalidated, the attempt simply did not happen. Only a `verdict` block needs the
+        // operator to assert that their fix left the spec standing.
+        if (scope === "attempt" || (opts.resumeBlocked && opts.only === item.id)) {
           // Not a silent retry: the operator named this exact item and asserted the cause is dealt
           // with. The phase and the spec are still on disk, so this re-enters where it stopped.
-          log(`  resuming a blocked item on the operator's instruction — re-entering "${progress[item.id]?.status}" over the files on disk`);
+          log(
+            scope === "attempt"
+              ? `  re-entering a blocked item whose ATTEMPT failed (nothing was invalidated) over the files on disk`
+              : `  resuming a blocked item on the operator's instruction — re-entering over the files on disk`,
+          );
           setProgress(cwd, item.id, {
             status: progress[item.id]?.pausedPhase === "implement" ? "implementing" : "verifying",
-            note: `Resumed by the operator after a block. Previous note: ${progress[item.id]?.note ?? ""}`.slice(0, 4000),
+            note: `${scope === "attempt" ? "Re-entered after a failed attempt" : "Resumed by the operator after a block"}. Previous note: ${progress[item.id]?.note ?? ""}`.slice(0, 4000),
           });
         } else {
           return [
@@ -338,8 +346,8 @@ export async function runBatch(
           log(`  WARNING: ${role} thinking:${cfg.thinking} is NOT applied — no model resolved to carry it. Set queue.defaultModel.`);
         }
       }
-      const block = (why: string): string => {
-        setProgress(cwd, item.id, { status: "blocked", note: why });
+      const block = (why: string, scope: "verdict" | "attempt" = "verdict"): string => {
+        setProgress(cwd, item.id, { status: "blocked", note: why, blockScope: scope });
         pi.appendEntry("fr-batch", { item: item.id, status: "blocked", note: why });
         log(`  BLOCKED: ${why}`);
         return [
@@ -453,27 +461,93 @@ export async function runBatch(
        *
        * Returns null when nothing was aborted, so callers can chain it before `block`.
        */
-      const abortStop = (phase: Phase, round: number): string | null => {
-        if (!opts.signal?.aborted) return null;
+      /**
+       * The driver has stopped supervising a child that may still be alive.
+       *
+       * ONE PATH FOR ALL THREE WAYS THAT HAPPENS — an operator's hard stop, the wallclock expiring, and
+       * a `/reload` — because the correct response is identical and only the hard stop had it. The
+       * timeout used to `block()`, which is sticky, says nothing about the loose child, and invites an
+       * immediate re-run into a tree two children are writing. Reported from a real batch four times:
+       * an abandoned child still editing the tree, its orphaned build colliding with the operator's
+       * over one `build/` directory, a 40-minute test run competing for the same result files, and two
+       * orphans at 2h47m and 48m burning CPU. Their parent was pid 1; the driver could not see them.
+       *
+       * The driver CANNOT kill them: pi-subagents' RPC `stop` refuses a running workflow and children
+       * are workflows. So what it owes is the truth and the handle — `runId` is the one thing that
+       * works (`subagent interrupt <id>`), and the operator had to hunt PIDs for want of it.
+       *
+       * NO `pausedChildId` is recorded, deliberately: reviving a child that may still be alive would
+       * put two writers in one tree.
+       */
+      const abandonChild = (
+        phase: Phase,
+        round: number,
+        cause: { kind: "stopped" | "timeout" | "reload"; detail: string; runId?: string },
+      ): string => {
+        const label = cause.kind === "stopped" ? "HARD STOPPED" : cause.kind === "timeout" ? "TIMED OUT" : "INTERRUPTED";
         setProgress(cwd, item.id, {
           status: "paused",
           fixRounds: round,
           pausedPhase: phase,
           pausedRound: round,
+          // One kind for all three: what matters downstream is that a child was abandoned rather than
+          // asked to stop, and `resumeFor` must not revive it.
           pauseKind: "stopped",
-          note: `Hard-stopped by the operator during ${phase}. The child that was running was abandoned, not stopped.`,
+          note: [
+            `${label} during ${phase}: ${cause.detail}`,
+            "The child was ABANDONED, not killed — this driver cannot stop a running workflow, so it may",
+            "still be editing this tree.",
+            ...(cause.runId ? [`Stop it with:  subagent interrupt ${cause.runId}`] : []),
+          ].join("\n"),
         });
-        pi.appendEntry("fr-batch", { item: item.id, status: "paused", phase, reason: "hard-stopped" });
-        log(`  HARD STOPPED during ${phase}`);
+        pi.appendEntry("fr-batch", { item: item.id, status: "paused", phase, reason: cause.kind, runId: cause.runId });
+        log(`  ${label} during ${phase} — child abandoned${cause.runId ? ` (${cause.runId})` : ""}`);
         return [
-          `fr-batch: HARD STOPPED at ${item.id} (${phase}). ${committed} item(s) committed before it.`,
+          `fr-batch: ${label} at ${item.id} (${phase}). ${committed} item(s) committed before it.`,
           "",
-          "The child that was in flight was abandoned, not killed: it may still be running and",
-          "still writing to this tree for a while. Let it settle before starting another run.",
+          cause.detail,
+          "",
+          "The child that was in flight was ABANDONED, not killed: this driver cannot stop a running",
+          "workflow, so it may keep running and keep writing to this tree. Let it settle before starting",
+          "another run — two children in one tree corrupt each other, and its orphaned build or test run",
+          "will fight yours over the same output directories.",
+          ...(cause.runId
+            ? ["", `To stop it now:  subagent interrupt ${cause.runId}`]
+            : ["", "No run id was captured, so find it with `/subagents` or by process."]),
           "",
           `Nothing was committed. Resume with fr_batch action "run" — it re-enters "${phase}" over the`,
           `files already on disk. To start the item over instead: fr_batch action "reset", only: "${item.id}".`,
         ].join("\n");
+      };
+
+      /** Non-null only when the operator's hard stop is what ended the wait, so callers can chain it. */
+      const abortStop = (phase: Phase, round: number): string | null => {
+        if (!opts.signal?.aborted) return null;
+        return abandonChild(phase, round, { kind: "stopped", detail: "The operator asked for a hard stop." });
+      };
+
+      /**
+       * A child never produced an outcome. THREE cases, decided once here rather than four times at
+       * the call sites, which is how the timeout came to behave differently from the hard stop.
+       *
+       *   the operator hard-stopped   -> abandoned (paused, resumable)
+       *   the wallclock expired       -> abandoned (paused, resumable). The child is STILL RUNNING;
+       *                                  blocking here was the reported defect, because a block is
+       *                                  sticky and says nothing about the loose process.
+       *   anything else               -> a real launch failure: the attempt did not happen, so it is
+       *                                  an `attempt`-scoped block that a plain `run` may re-enter.
+       */
+      const childLaunchFailure = (phase: Phase, round: number, who: string, e: Error): string => {
+        const c = classifyLaunchFailure(e, Boolean(opts.signal?.aborted));
+        if (c.kind === "stopped") return abandonChild(phase, round, { kind: "stopped", detail: "The operator asked for a hard stop." });
+        if (c.kind === "timeout") {
+          return abandonChild(phase, round, {
+            kind: "timeout",
+            detail: `${who} outlived its budget (queue.childTimeoutMs). Nothing stopped it.`,
+            runId: c.runId,
+          });
+        }
+        return block(`${who} failed to run: ${e.message}`, "attempt");
       };
 
       /**
@@ -615,7 +689,7 @@ export async function runBatch(
               if (await handlePause("implement", e, fixRoundsSoFar)) continue;
               return pausedReturn("implement");
             }
-            return abortStop("implement", fixRoundsSoFar) ?? block(`Implementer failed to run: ${(e as Error).message}`);
+            return childLaunchFailure("implement", fixRoundsSoFar, "The implementer", e as Error);
           }
         }
         // A decision ask outranks the status check: a child told to stop and write its question
@@ -624,7 +698,7 @@ export async function runBatch(
         const implDecision = decisionStop("implement", impl, fixRoundsSoFar);
         if (implDecision) return implDecision;
         const implFailure = childOutcomeFailure("Implementer", impl);
-        if (implFailure) return block(implFailure);
+        if (implFailure) return block(implFailure, "attempt");
         const after = await pi.exec("git", ["status", "--porcelain"], { cwd });
         if ((after.stdout ?? "").trim().length === 0) {
           return block("Implementer reported success but changed no files. Treating as a failure, not a no-op success.");
@@ -641,9 +715,18 @@ export async function runBatch(
       // Frozen before the first audit and reused for every round after it. This is the
       // whole convergence mechanism: the checklist cannot grow while it is being audited.
       const contract = await freezeContract(pi, cwd, item, log);
+      // Read-only context for the auditor's second job: nobody reviews the verify commands today, so
+      // a line asserting a pre-change value cannot be contradicted by anything.
+      const acceptance = extractAcceptanceSection((await readPlanText(pi, cwd, item.plan)).text);
       // Consecutive unparseable-verdict retries at the CURRENT round. Reset on any
       // parseable verdict; never consumes a fix round.
       let auditAttempt = 0;
+      // Consecutive rounds whose fixer closed nothing and rejected nothing. THIS is what the budget
+      // bounds — see Queue.maxFixRounds. A productive round resets it to zero.
+      let barren = 0;
+      // Rejections the PREVIOUS round's fixer recorded. A rejection is work: it settles a gap
+      // durably, so a round that only rejected is not barren.
+      let lastRejections = 0;
       for (;;) {
         {
           const s = stopNow(`inside ${item.id} (after ${round} fix round(s))`);
@@ -654,6 +737,9 @@ export async function runBatch(
         log(`  verify (after ${round} fix round(s))…`);
         const v = await runVerify(pi, cwd, verifyCmds, q.verifyTimeoutMs, log);
         if (!v.ok) {
+          // Rounds, not barren rounds, and deliberately: here the fixer is handed ONE concrete
+          // failing command with its output. A round that leaves it failing produced nothing by
+          // definition, so the two counts coincide and a second mechanism would only add surface.
           if (round >= q.maxFixRounds) {
             return block(`Verify failed after ${round} fix round(s): \`${v.cmd}\` exited ${v.code}.\n\n${v.tail}`);
           }
@@ -693,7 +779,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
                 if (await handlePause("fix-verify", e, round)) continue;
                 return pausedReturn("fix-verify");
               }
-              return abortStop("fix-verify", round) ?? block(`Fixer failed to run after a red verify: ${(e as Error).message}`);
+              return childLaunchFailure("fix-verify", round, "The fixer (after a red verify)", e as Error);
             }
           }
           const fixVerifyDecision = decisionStop("fix-verify", fixVerify, round);
@@ -701,7 +787,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           // A fixer that never ran cannot have fixed anything, and looping back to verify would
           // spend another round rediscovering the same red gate.
           const fixVerifyFailure = childOutcomeFailure("Fixer (red verify)", fixVerify);
-          if (fixVerifyFailure) return block(fixVerifyFailure);
+          if (fixVerifyFailure) return block(fixVerifyFailure, "attempt");
           continue;
         }
         log("  verify GREEN");
@@ -735,7 +821,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
                   agent: "fr-test-auditor",
                   ...spawnFor("auditor"),
                   context: "fresh",
-                  task: auditTask(item, contract, loadLedger(cwd, item.id)),
+                  task: auditTask(item, contract, loadLedger(cwd, item.id), verifyCmds, acceptance),
                   outputSchema: AUDIT_SCHEMA,
                   output: narrationPath,
                   outputMode: "file-only",
@@ -752,7 +838,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
                 if (await handlePause("audit", e, round)) continue;
                 return pausedReturn("audit");
               }
-              return abortStop("audit", round) ?? block(`Auditor failed to run: ${(e as Error).message}`);
+              return childLaunchFailure("audit", round, "The auditor", e as Error);
             }
           }
 
@@ -763,7 +849,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           // one here. Falling through to the verdict parser would classify it as an unparseable
           // verdict and then blame the schema for a bad install or a dead workflow.
           const auditFailure = childOutcomeFailure("Auditor", audit);
-          if (auditFailure) return block(auditFailure);
+          if (auditFailure) return block(auditFailure, "attempt");
 
           // PREFER THE STRUCTURED OUTPUT. The auditor runs with an outputSchema, so
           // its schema-valid verdict arrives on the completion event; the artifact
@@ -816,8 +902,12 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         // Scope gate. An adversarial auditor asked to find gaps will always find one more;
         // only findings that name a row of the FROZEN contract may gate this item.
         const { blocking, outOfScope } = partitionGaps(verdict.gaps, contract);
-        if (outOfScope.length > 0 || verdict.notes?.trim()) {
-          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes);
+        const verifyFindings = verdict.verify_findings ?? [];
+        if (outOfScope.length > 0 || verdict.notes?.trim() || verifyFindings.length > 0) {
+          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes, verifyFindings);
+          if (verifyFindings.length > 0) {
+            log(`  ${verifyFindings.length} verify-gate disagreement(s) with the PLAN's acceptance text → recorded, NON-BLOCKING`);
+          }
           if (outOfScope.length > 0) {
             log(`  ${outOfScope.length} finding(s) fell outside the frozen contract → non-blocking, recorded in ${item.id}.out-of-scope.md`);
           }
@@ -827,8 +917,12 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         const ledger = loadLedger(cwd, item.id);
         const nowIds = blocking.map((g) => (g.id ?? "").trim());
         const repeats = nowIds.filter((id) => (ledger[id]?.raisedRounds ?? []).length > 0);
+        let closedNow = 0;
         for (const [id, e] of Object.entries(ledger)) {
-          if (e.state === "open" && !nowIds.includes(id)) e.state = "closed";
+          if (e.state === "open" && !nowIds.includes(id)) {
+            e.state = "closed";
+            closedNow++;
+          }
         }
         for (const g of blocking) {
           const id = (g.id ?? "").trim();
@@ -840,6 +934,20 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           ledger[id] = e;
         }
         saveLedger(cwd, item.id, ledger);
+
+        // Was the PREVIOUS fix round productive? Closures observed now are what that fixer actually
+        // fixed; its rejections were applied to the ledger before this audit ran, so they are counted
+        // from the variable rather than re-derived. Only meaningful once a fix round has happened.
+        if (round > fixRoundsSoFar) {
+          const productive = roundWasProductive(closedNow, lastRejections);
+          barren = productive ? 0 : barren + 1;
+          log(
+            productive
+              ? `  round ${round} was productive (${closedNow} closed, ${lastRejections} rejected) — barren streak reset`
+              : `  round ${round} closed and rejected nothing — barren ${barren}/${q.maxFixRounds}`,
+          );
+        }
+        lastRejections = 0;
 
         if (blocking.length === 0) {
           log(verdict.gaps.length > 0 ? `  audit COMPLETE (all ${verdict.gaps.length} finding(s) were out of contract)` : "  audit COMPLETE");
@@ -891,9 +999,37 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
             ].join("\n"),
           );
         }
-        if (round >= q.maxFixRounds) {
-          const list = blocking.map((g) => `  - [${g.id} · ${g.kind}] ${g.what}`).join("\n");
-          return block(`Audit still reports ${blocking.length} in-contract gap(s) after ${q.maxFixRounds} fix round(s):\n${list}\n\nFull verdict: ${rawPath}`);
+        const list = () => blocking.map((g) => `  - [${g.id} · ${g.kind}] ${g.what}`).join("\n");
+        if (barren >= q.maxFixRounds) {
+          return block(
+            [
+              `Audit is stuck: ${barren} consecutive fix round(s) closed nothing and rejected nothing.`,
+              "",
+              list(),
+              "",
+              "The budget counts BARREN rounds, not rounds — an item that keeps closing gaps is never",
+              "stopped for taking rounds to do it. This one stopped making progress.",
+              "",
+              `Full verdict: ${rawPath}`,
+              `Ledger:  ${ledgerPath(cwd, item.id)}`,
+            ].join("\n"),
+          );
+        }
+        if (round >= q.maxTotalRounds) {
+          return block(
+            [
+              `Audit reached the total round cap: ${round} of ${q.maxTotalRounds} (queue.maxTotalRounds).`,
+              "",
+              list(),
+              "",
+              "Rounds were still productive, so this is a COST stop rather than a verdict: the loop was",
+              "closing gaps and finding new ones. Raise maxTotalRounds to let it continue, or read the",
+              "ledger to decide whether the remaining rows are worth the rounds.",
+              "",
+              `Full verdict: ${rawPath}`,
+              `Ledger:  ${ledgerPath(cwd, item.id)}`,
+            ].join("\n"),
+          );
         }
 
         round += 1;
@@ -928,14 +1064,14 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               if (await handlePause("fix-audit", e, round)) continue;
               return pausedReturn("fix-audit");
             }
-            return abortStop("fix-audit", round) ?? block(`Fixer failed to run after an audit gap report: ${(e as Error).message}`);
+            return childLaunchFailure("fix-audit", round, "The fixer (audit gaps)", e as Error);
           }
         }
 
         const fixAuditDecision = decisionStop("fix-audit", fix, round);
         if (fixAuditDecision) return fixAuditDecision;
         const fixAuditFailure = childOutcomeFailure("Fixer (audit gaps)", fix);
-        if (fixAuditFailure) return block(fixAuditFailure);
+        if (fixAuditFailure) return block(fixAuditFailure, "attempt");
 
         // Ingest the fixer's rejections. This is the only way an invalid gap dies: without it
         // the next audit re-raises it, and a re-raise now stops the batch.
@@ -953,6 +1089,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               l[id].reason = r.why;
             }
             saveLedger(cwd, item.id, l);
+            lastRejections = report.rejected.length;
             log(`  fixer rejected ${report.rejected.length} gap(s) as invalid → recorded in the ledger`);
           }
         }

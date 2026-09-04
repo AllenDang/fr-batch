@@ -216,7 +216,28 @@ export interface Queue {
    * missing `maxFixRounds` made `round >= q.maxFixRounds` false forever and left the fix
    * loop unbounded. The queue read as configured either way.
    */
+  /**
+   * How many CONSECUTIVE BARREN fix rounds end an item. A barren round is one whose fixer closed
+   * nothing and rejected nothing.
+   *
+   * It counts barren rounds, not rounds, and that is the whole point. Counting rounds punishes the
+   * healthy trajectory: an auditor establishes coverage empirically, a row at a time, so a large
+   * matrix takes several rounds to walk, and an item that closes everything it is handed each round
+   * while the auditor keeps reaching deeper is CONVERGING. Reported from a real batch: 3 gaps closed,
+   * then 3 more closed, then 1 — every round productive, and the budget ran out anyway.
+   *
+   * The consequence is not a looser bound. An item that closes nothing is stopped SOONER than before,
+   * because barren rounds are counted consecutively instead of being diluted by productive ones.
+   */
   maxFixRounds: number;
+  /**
+   * Total fix rounds, whatever their outcome. A COST stop, not a correctness one.
+   *
+   * Without it an auditor/fixer pair that alternates one closure with one fresh discovery never goes
+   * barren and runs until `childTimeoutMs` times the round count. Defaulted from maxFixRounds so it
+   * is not another number to choose.
+   */
+  maxTotalRounds: number;
   childTimeoutMs: number;
   verifyTimeoutMs: number;
   /** Used by any item that omits `verify`. Never empty — an empty gate is no gate. */
@@ -261,6 +282,7 @@ export interface Queue {
  */
 export const QUEUE_BUDGET_DEFAULTS = {
   maxFixRounds: 4,
+  maxTotalRounds: 12,
   childTimeoutMs: 3 * 60 * 60 * 1000,
   verifyTimeoutMs: 90 * 60 * 1000,
 } as const;
@@ -311,6 +333,20 @@ export interface ProgressEntry {
   pauseKind?: "network" | "decision" | "stopped";
   /** The child's question, verbatim. Set only for a "decision" pause. */
   pendingAsk?: string;
+  /**
+   * What a block invalidated. Set only while status is "blocked".
+   *
+   * `blocked` used to mean two unrelated things, and the sticky rule was right for one of them:
+   *   "verdict"  the GATE returned against this item — verify red at budget, in-contract gaps at
+   *              budget, a re-raised id, a laundered pin. A human has to change something, and the
+   *              driver cannot tell whether their fix invalidated the recorded phase or the frozen
+   *              spec. Sticky: a plain `run` refuses.
+   *   "attempt"  the attempt did not happen — a child that could not launch, a bad install, a dead
+   *              workflow. Nothing about the contract or the phase was invalidated, so re-entering is
+   *              not a guess. A plain `run` resumes.
+   * Absent on an older progress.json, which reads as "verdict" — the conservative direction.
+   */
+  blockScope?: "verdict" | "attempt";
 }
 
 export type Progress = Record<string, ProgressEntry>;
@@ -347,6 +383,8 @@ export interface AuditVerdict {
   verdict: "complete" | "gaps_found";
   gaps: AuditGap[];
   notes?: string;
+  /** Non-blocking: the verify block is the operator's, so a disagreement is reported, never gated. */
+  verify_findings?: Array<{ command: string; what: string }>;
 }
 
 export type GapState = "open" | "closed" | "rejected";
@@ -412,6 +450,24 @@ export const AUDIT_SCHEMA = {
       type: "string",
       description:
         "Anything that is not a blocking gap: coverage you would want but the frozen contract does not ask for, and anything the fixer needs as background. Recorded as a follow-up, never blocking.",
+    },
+    verify_findings: {
+      type: "array",
+      description:
+        "Disagreements between the project's VERIFY commands (given to you in the task) and what the PLAN says acceptance is. NON-BLOCKING and not a gap: the verify block belongs to the operator, not to this item. Empty when they agree, or when you cannot tell.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["command", "what"],
+        properties: {
+          command: { type: "string", description: "The verify command, verbatim from the task." },
+          what: {
+            type: "string",
+            description:
+              "The disagreement, one sentence, quoting the PLAN text it contradicts. An assertion encoding a pre-change value is the canonical case.",
+          },
+        },
+      },
     },
   },
 } as const;

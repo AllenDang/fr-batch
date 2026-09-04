@@ -49,6 +49,66 @@ const MUTATIONS = [
     mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
   },
   {
+    name: "the run lock goes back to judging liveness by file age",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("  if (pid === null) return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };", "  return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };"),
+  },
+  {
+    name: "a superseded driver reports again",
+    probe: "probe_lifecycle.ts",
+    file: "background.ts",
+    mutate: (t) => t.replace("  if (!isCurrentGeneration(cwd, d)) {", "  if (false) {"),
+  },
+  {
+    name: "a timeout blocks instead of recording an abandonment",
+    probe: "probe_lifecycle.ts",
+    file: "resilience.ts",
+    mutate: (t) => t.replace('  if (e.message.startsWith("WALLCLOCK:")) return { kind: "timeout", runId: runIdOfWallclock(e.message) };\n', ""),
+  },
+  {
+    name: "an abandoned child stops being reported as abandoned",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('          "The child that was in flight was ABANDONED, not killed: this driver cannot stop a running",', '          "The child stopped.",'),
+  },
+  {
+    name: "every block is sticky again, whatever it invalidated",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('        if (scope === "attempt" || (opts.resumeBlocked && opts.only === item.id)) {', "        if (opts.resumeBlocked && opts.only === item.id) {"),
+  },
+  {
+    name: "a verdict block loses its operator-asserted exit",
+    probe: "probe_fr_regression.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('        if (scope === "attempt" || (opts.resumeBlocked && opts.only === item.id)) {', '        if (scope === "attempt") {'),
+  },
+  {
+    name: "the fix budget counts rounds again instead of barren rounds",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("        if (barren >= q.maxFixRounds) {", "        if (round >= q.maxFixRounds) {"),
+  },
+  {
+    name: "a rejection stops counting as progress",
+    probe: "probe_lifecycle.ts",
+    file: "contract.ts",
+    mutate: (t) => t.replace("  return closed > 0 || rejected > 0;", "  return closed > 0;"),
+  },
+  {
+    name: "the total round cap is removed",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("        if (round >= q.maxTotalRounds) {", "        if (false) {"),
+  },
+  {
+    name: "verify findings stop being recorded",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes, verifyFindings);", "          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes);"),
+  },
+  {
     name: "the undici connect-failure wordings are removed again",
     probe: "probe_fr_regression.ts",
     file: "resilience.ts",
@@ -59,12 +119,6 @@ const MUTATIONS = [
     probe: "probe_fr_regression.ts",
     file: "resilience.ts",
     mutate: (t) => t.replace("  return elapsedMs < budgetMs / 10;", "  return false;"),
-  },
-  {
-    name: "a blocked item has no work-preserving exit",
-    probe: "probe_fr_regression.ts",
-    file: "driver.ts",
-    mutate: (t) => t.replace("        if (opts.resumeBlocked && opts.only === item.id) {", "        if (false) {"),
   },
   {
     name: "the audit verdict goes back to sharing the narration's filename",
@@ -89,16 +143,6 @@ const MUTATIONS = [
     probe: "probe_bug_orchestration.ts",
     file: "types.ts",
     mutate: (t) => t.replace('export const isDone = (s: ItemStatus): boolean => s === "committed" || s === "skipped";', 'export const isDone = (s: ItemStatus): boolean => s === "committed";'),
-  },
-  {
-    name: "the strict-shrink guard comes back and blocks incremental audit discovery",
-    probe: "probe_fr_regression.ts",
-    file: "driver.ts",
-    mutate: (t) =>
-      t.replace(
-        "        if (round >= q.maxFixRounds) {\n          const list = blocking.map",
-        '        if (round > 0 && blocking.length >= 2) {\n          return block("Audit is not converging: the gap set is not shrinking.");\n        }\n        if (round >= q.maxFixRounds) {\n          const list = blocking.map',
-      ),
   },
   {
     name: "the assume-unchanged escape hatch is not checked",

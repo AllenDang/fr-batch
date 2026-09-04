@@ -147,9 +147,9 @@ ok("...and none of those refusals appended to the record", countHistory(repo) ==
 
 // A driver mid-batch rewrites progress.json on every phase transition, so a sweep landing
 // between its read and its write would be silently undone. The lock is the interlock.
-writeFileSync(join(repo, ".pi/fr-batch/.run.lock"), "pid 999 since now\n");
+writeFileSync(join(repo, ".pi/fr-batch/.run.lock"), `pid ${process.ppid} since now\n`);
 const lockedOut = archiveItems(repo);
-ok("a fresh run lock refuses the sweep", /refused — a fresh run lock is present \(pid 999/.test(lockedOut), lockedOut.split("\n")[0]);
+ok("a lock naming a live pid refuses the sweep", /refused — a run lock is held/.test(lockedOut) && /RUNNING/.test(lockedOut), lockedOut.split("\n")[0]);
 ok("...saying WHY, not just no", /progress entries that driver is still rewriting/.test(lockedOut));
 ok("...and it changed nothing", countHistory(repo) === 3 && loadQueue(repo).items.length === 4);
 rmSync(join(repo, ".pi/fr-batch/.run.lock"), { force: true });

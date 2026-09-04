@@ -20,6 +20,15 @@ import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
 // NOT part of tests/run.mjs: it needs a prepared fixture repo. Run by hand after touching
 // bug_pipeline.ts or the driver dispatch.
 const REPO = process.env.FR_E2E_REPO ?? "/tmp/fr-batch-e2e";
+// The fixture NAMES come from the environment too, and the defaults are generic on purpose: this
+// harness runs against a repo prepared by hand from a consuming project's own fixtures, and that
+// project's directory names are not this repo's business. Run it as:
+//
+//   FR_E2E_FIXTURE=tests/fixtures/<scenario pin> \
+//   FR_E2E_EXIT_FIXTURE=tests/fixtures/<exit-code pin> \
+//   node tests/e2e_bug_kind.mjs
+//
+// tests/probe_bug_orchestration.ts is the self-contained equivalent, and it is the one in PROBES.
 // Both fixture paths come from the environment: this harness runs against a repo prepared by hand
 // from a consuming project's own fixtures, and that project's directory names are not this repo's
 // business. tests/probe_bug_orchestration.ts is the self-contained equivalent that needs none of it.

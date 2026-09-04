@@ -61,7 +61,8 @@ Then, in each repo the batch should work on:
   ]
 
   // optional; shown with their defaults:
-  // "maxFixRounds": 4,
+  // "maxFixRounds": 4,      // consecutive BARREN rounds, not rounds — see below
+  // "maxTotalRounds": 12,   // total rounds, as a cost stop
   // "childTimeoutMs": 10800000,     // 3h — one child
   // "verifyTimeoutMs": 5400000      // 90min, PER VERIFY COMMAND (not per pass)
 }
@@ -535,6 +536,94 @@ item.roles[role]  →  item  →  queue.roles[role]  →  queue.default*  →  t
   the items that differ from it. `plan` prints the resolved value per item.
 - A **resumed** child (network pause, decision pause) keeps the model it launched with:
   `resume` revives a retained session, it does not re-decide its contract.
+
+## What a run owes the tree it leaves behind
+
+Three things end a child's supervision, and the driver **cannot kill any of them** — pi-subagents'
+RPC `stop` refuses a running workflow and children are workflows. So all three behave the same way,
+and the one thing they owe you is the truth and a handle:
+
+| | recorded | resumable | says the child may still be running |
+|---|---|---|---|
+| `stop` twice (hard) | `paused` | yes | yes |
+| `childTimeoutMs` expiring | `paused` | yes | yes, **with the run id** |
+| a `/reload` or quit | `paused` | yes | yes |
+
+The timeout used to `block()` instead, which is sticky, said nothing about the loose process, and
+invited an immediate re-run into a tree two children were writing. Measured on a real batch: an
+abandoned child still editing files, its orphaned build colliding with the operator's over one
+`build/`, a 40-minute test run competing for the same result files, and two orphans at 2h47m and 48m
+burning CPU — all with parent pid 1, invisible to the driver.
+
+**The message names the run id**, because that is the only handle that works:
+
+```
+subagent interrupt <run id>
+```
+
+Let it settle before the next run. Two children in one tree corrupt each other.
+
+### A block says what it invalidated
+
+`blocked` used to mean two unrelated things, and only one of them justified being sticky:
+
+| scope | when | a plain `run` |
+|---|---|---|
+| `verdict` | the gate returned against the item — verify still red at budget, in-contract gaps at budget, a re-raised id, a laundered pin | **refuses.** A human changed something and the driver cannot tell whether the phase or the frozen spec still stands |
+| `attempt` | the attempt never happened — a child that could not launch, a bad install, a dead workflow | **resumes** the recorded phase over the files on disk |
+
+For a `verdict` block there is still a work-preserving exit, and it is an explicit operator act
+rather than a guess by the driver:
+
+```
+fr_batch { action: "continue", only: "<id>" }    # keeps the tree, re-enters the phase
+fr_batch { action: "reset",    only: "<id>" }    # starts over — and does NOT clean the tree
+```
+
+`reset` leaving the tree dirty is what made this expensive: the next `run` then refuses those very
+changes as a dirty tree, so the only way out was a WIP commit — breaking the one invariant the driver
+exists to keep. It now says so, and names `continue`.
+
+### The fix budget counts BARREN rounds
+
+`maxFixRounds` bounds **consecutive rounds that closed nothing and rejected nothing**, not rounds.
+
+Counting rounds punished the healthy trajectory. An auditor establishes coverage empirically, a row
+at a time, so a large matrix takes several rounds to walk — and an item that closes everything it is
+handed each round while the auditor reaches deeper is *converging*. Measured on a real batch: 3 gaps
+closed, then 3 more closed, then 1, and the budget ran out anyway.
+
+This is not a looser bound. An item that closes nothing is stopped **sooner**, because barren rounds
+are counted consecutively instead of being diluted by productive ones. `maxTotalRounds` is the cost
+stop on top, for an auditor/fixer pair that alternates one closure with one discovery and so never
+goes barren.
+
+The verify-red loop still counts rounds, deliberately: there the fixer is handed one concrete failing
+command with its output, so a round that leaves it failing produced nothing by definition.
+
+### Prove freshness by CONTENT, not by timestamp
+
+If your `defaultVerify` checks that a build is current, do not check mtimes:
+
+```bash
+test -z "$(find src tests -newer bin/thing)"     # ← a false-red generator. Do not.
+strings bin/thing | grep -c 'a literal your change adds'   # ← asks whether the change is IN there
+```
+
+`git checkout` touches mtimes without changing content, and a build then correctly declines to
+relink — so the timestamp check reds on a tree that is perfectly current. Measured on a real batch:
+three false reds, one of which burned a whole fix round and then the item.
+
+### The run lock knows who holds it
+
+The lock records the holder's pid, and liveness is decided by asking whether that process exists —
+not by the file's age. A driver that crashed, was reloaded, or quit leaves a lock that is reclaimed
+immediately, instead of refusing `reset` and `archive` for fifteen minutes. A lock naming a live pid
+is respected however old it is.
+
+A superseded driver also stops reporting: a `/reload` leaves the old in-process loop's timers alive,
+and its completion message would otherwise arrive carrying budgets from a queue since edited, or
+naming an item since removed.
 
 ## Network outages
 

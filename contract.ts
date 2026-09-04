@@ -40,6 +40,31 @@ export function extractTestsSection(text: string): string | null {
 }
 
 /**
+ * The PLAN's acceptance section, verbatim, or "" when it has none.
+ *
+ * Same heading-by-TEXT matching as extractTestsSection, and for the same reason: real PLANs number
+ * their sections. Several spellings are accepted because this is read-only context for a reviewer —
+ * getting it wrong costs a less useful prompt, never a wrong verdict, so a generous matcher beats a
+ * strict one here.
+ */
+export function extractAcceptanceSection(text: string): string {
+  const lines = text.split("\n");
+  const heading = /^(#{2,4})\s*(?:\d+(?:\.\d+)*[.)]?\s*)?(?:acceptance|build,? validate,? (?:and )?test|build and test|acceptance gate)\b/i;
+  const start = lines.findIndex((l) => heading.test(l.trim()));
+  if (start < 0) return "";
+  const depth = (heading.exec(lines[start]!.trim())?.[1] ?? "##").length;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = /^(#{1,6})\s/.exec(lines[i] ?? "");
+    if (m && m[1].length <= depth) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n").trimEnd();
+}
+
+/**
  * The PLAN text this item is judged against: HEAD's copy, falling back to the working tree
  * when the PLAN is not committed yet. Same resolution for the pre-flight gate and for the
  * frozen contract, so the gate cannot pass on text the contract never sees.
@@ -199,8 +224,33 @@ export function partitionGaps(gaps: AuditGap[], contract: string): { blocking: A
   return { blocking, outOfScope };
 }
 
+/**
+ * Did the previous fix round do any work?
+ *
+ * A PURE RULE, testable without driving the loop into the one state where it changes an outcome.
+ * That state is narrow by construction: `closed === 0` with nothing re-raised requires every
+ * previously-open gap to have been REJECTED, because a gap the auditor merely stops reporting is
+ * swept to closed and a re-raised one is stopped by the re-litigation guard first. So the two terms
+ * are not redundant — the second is exactly the all-rejected round, and calling that barren would
+ * punish a fixer for settling an invalid demand, which is work the ledger keeps forever.
+ *
+ * This is what the fix budget counts. Rounds are not the unit: an auditor establishes coverage a row
+ * at a time, so an item that closes everything it is handed while the auditor reaches deeper is
+ * converging, and counting rounds stopped exactly that.
+ */
+export function roundWasProductive(closed: number, rejected: number): boolean {
+  return closed > 0 || rejected > 0;
+}
+
 /** Append out-of-contract findings so they survive as follow-up material. */
-export function recordOutOfScope(cwd: string, item: QueueItem, round: number, gaps: AuditGap[], notes: string | undefined): void {
+export function recordOutOfScope(
+  cwd: string,
+  item: QueueItem,
+  round: number,
+  gaps: AuditGap[],
+  notes: string | undefined,
+  verifyFindings: Array<{ command: string; what: string }> = [],
+): void {
   const p = outOfScopePath(cwd, item.id);
   const head = existsSync(p)
     ? ""
@@ -217,6 +267,17 @@ export function recordOutOfScope(cwd: string, item: QueueItem, round: number, ga
     "",
     ...gaps.map((g) => `- **[${g.id} · ${g.kind}]** ${g.what}\n  - why: ${g.why_missing}\n  - suggested: ${g.suggested_row}`),
     ...(notes?.trim() ? ["", `Auditor notes: ${notes.trim()}`] : []),
+    ...(verifyFindings.length
+      ? [
+          "",
+          "### The project's verify gate disagrees with the PLAN's acceptance text",
+          "",
+          "Non-blocking: the verify block is the operator's, not this item's. But nothing else reviews",
+          "those commands, so a line encoding a pre-change value is otherwise unfalsifiable.",
+          "",
+          ...verifyFindings.map((f) => `- \`${f.command}\`\n  - ${f.what}`),
+        ]
+      : []),
     "",
   ].join("\n");
   const prior = existsSync(p) ? readFileSync(p, "utf8") : "";

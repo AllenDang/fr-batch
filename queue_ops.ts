@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { asEffort, modelLabel, normalizeChildConfig } from "./config.ts";
 import { archiveDir, historyPath, itemStateFiles, progressPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
 import { describeLive, drivers } from "./state.ts";
-import { STALE_RUNLOCK_MS, appendHistory, countHistory, loadHistory, loadProgress, loadQueue, statusOf } from "./store.ts";
+import { appendHistory, countHistory, describeLock, loadHistory, loadProgress, loadQueue, lockHolder, statusOf } from "./store.ts";
 import { ITEM_KINDS, THINKING_EFFORTS, isDone } from "./types.ts";
 import type { HistoryEntry, ItemKind, QueueItem } from "./types.ts";
 
@@ -193,18 +193,17 @@ export function resetItem(cwd: string, id: string): string {
       'Stop the batch first: fr_batch action "stop" (twice to abandon the child), then reset.',
     ].join("\n");
   }
-  const lock = runlockPath(cwd);
-  if (existsSync(lock) && Date.now() - statSync(lock).mtimeMs < STALE_RUNLOCK_MS) {
-    let holder = "unknown";
-    try {
-      holder = readFileSync(lock, "utf8").trim();
-    } catch {
-      /* ignore */
+  // Liveness, not age. A lock left behind by a dead driver used to refuse this for fifteen minutes
+  // even though the pid in it was gone — and the pid was always right there in the file.
+  {
+    const h = lockHolder(cwd);
+    if (h?.alive) {
+      return [
+        `fr-batch: refused — a run lock is held: ${describeLock(h)}`,
+        "Another session is driving this repo. Reset once it is done.",
+        ...(h.pid === null ? [`No pid in the lock, so this is an age judgement; delete ${runlockPath(cwd)} if you know it is dead.`] : []),
+      ].join("\n");
     }
-    return [
-      `fr-batch: refused — a fresh run lock is present (${holder}), so another session may be driving this repo.`,
-      `Reset once it is done, or delete ${lock} if that process is gone.`,
-    ].join("\n");
   }
   const all = loadProgress(cwd);
   const dropped = itemStateFiles(cwd, id).filter((p) => existsSync(p));
@@ -247,19 +246,16 @@ export function archiveItems(cwd: string, only?: string): string {
       'Archive once the batch ends, or stop it first: fr_batch action "stop".',
     ].join("\n");
   }
-  const lock = runlockPath(cwd);
-  if (existsSync(lock) && Date.now() - statSync(lock).mtimeMs < STALE_RUNLOCK_MS) {
-    let holder = "unknown";
-    try {
-      holder = readFileSync(lock, "utf8").trim();
-    } catch {
-      /* ignore */
+  {
+    const h = lockHolder(cwd);
+    if (h?.alive) {
+      return [
+        `fr-batch: refused — a run lock is held: ${describeLock(h)}`,
+        "Archiving deletes progress entries that driver is still rewriting.",
+        "Sweep once it is done.",
+        ...(h.pid === null ? [`No pid in the lock, so this is an age judgement; delete ${runlockPath(cwd)} if you know it is dead.`] : []),
+      ].join("\n");
     }
-    return [
-      `fr-batch: refused — a fresh run lock is present (${holder}), so another session may be driving this repo.`,
-      "Archiving deletes progress entries that driver is still rewriting.",
-      `Sweep once it is done, or delete ${lock} if that process is gone.`,
-    ].join("\n");
   }
   const q = loadQueue(cwd);
   const progress = loadProgress(cwd);

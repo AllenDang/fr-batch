@@ -252,6 +252,25 @@ export function transientReason(o: ChildOutcome, budgetMs?: number, elapsedMs?: 
   return null;
 }
 
+/**
+ * Why a child produced no outcome. THREE cases, decided in one place.
+ *
+ * A pure function on purpose: the wallclock branch is otherwise unreachable in a guard suite, because
+ * rpc.ts adds a hardcoded 60s grace to every child budget and no test should pay a minute to observe a
+ * branch. Keeping the decision here means it can be asserted directly, and the driver's job shrinks to
+ * acting on the answer.
+ */
+export function classifyLaunchFailure(e: Error, aborted: boolean): { kind: "stopped" | "timeout" | "failure"; runId?: string } {
+  if (aborted) return { kind: "stopped" };
+  if (e.message.startsWith("WALLCLOCK:")) return { kind: "timeout", runId: runIdOfWallclock(e.message) };
+  return { kind: "failure" };
+}
+
+/** The run id a WALLCLOCK error carries, so the caller can name the child it abandoned. */
+export function runIdOfWallclock(message: string): string | undefined {
+  return /\[run ([^\]]+)\]/.exec(message)?.[1];
+}
+
 /** Same classification for a thrown error (spawn RPC failure, hung host). */
 export function transientThrowReason(e: Error): string | null {
   if (e.message.startsWith("WALLCLOCK:") || e.message === "aborted") return null;
