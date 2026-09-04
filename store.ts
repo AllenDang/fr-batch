@@ -242,6 +242,7 @@ export function setProgress(cwd: string, id: string, patch: Partial<ProgressEntr
   const next: ProgressEntry = {
     status,
     fixRounds: patch.fixRounds ?? all[id]?.fixRounds ?? 0,
+    ...(patch.barrenRounds !== undefined ? { barrenRounds: patch.barrenRounds } : all[id]?.barrenRounds !== undefined ? { barrenRounds: all[id].barrenRounds } : {}),
     updatedAt: new Date().toISOString(),
     ...(patch.note !== undefined ? { note: patch.note } : all[id]?.note ? { note: all[id].note } : {}),
     ...(patch.sha !== undefined ? { sha: patch.sha } : all[id]?.sha ? { sha: all[id].sha } : {}),
@@ -250,13 +251,19 @@ export function setProgress(cwd: string, id: string, patch: Partial<ProgressEntr
     ...(status === "blocked"
       ? { ...(patch.blockScope !== undefined ? { blockScope: patch.blockScope } : all[id]?.blockScope ? { blockScope: all[id].blockScope } : {}) }
       : {}),
-    // Pause fields are meaningful only while paused: any other status clears them,
-    // so a stale childId can never be revived into the wrong phase.
-    ...(status === "paused"
+    // WHERE an item stopped outlives the reason it stopped: both `paused` and `blocked` are re-entered
+    // at that phase, so retaining this only while paused made every blocked re-entry land at verify.
+    ...(status === "paused" || status === "blocked"
       ? {
           ...(patch.pausedPhase !== undefined ? { pausedPhase: patch.pausedPhase } : all[id]?.pausedPhase ? { pausedPhase: all[id].pausedPhase } : {}),
-          ...(patch.pausedChildId !== undefined ? { pausedChildId: patch.pausedChildId } : all[id]?.pausedChildId ? { pausedChildId: all[id].pausedChildId } : {}),
           ...(patch.pausedRound !== undefined ? { pausedRound: patch.pausedRound } : {}),
+        }
+      : {}),
+    // The child id is different: it names a PROCESS, and a stale one must never be revived. Only a
+    // paused item has a child worth resuming.
+    ...(status === "paused"
+      ? {
+          ...(patch.pausedChildId !== undefined ? { pausedChildId: patch.pausedChildId } : all[id]?.pausedChildId ? { pausedChildId: all[id].pausedChildId } : {}),
           ...(patch.pauseKind !== undefined ? { pauseKind: patch.pauseKind } : all[id]?.pauseKind ? { pauseKind: all[id].pauseKind } : {}),
           ...(patch.pendingAsk !== undefined ? { pendingAsk: patch.pendingAsk } : all[id]?.pendingAsk ? { pendingAsk: all[id].pendingAsk } : {}),
         }

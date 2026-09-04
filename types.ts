@@ -316,6 +316,15 @@ export const TRANSIENT_QUOTA_DEFAULTS: TransientPolicy = {
 export interface ProgressEntry {
   status: ItemStatus;
   fixRounds: number;
+  /**
+   * Consecutive fix rounds that closed nothing and rejected nothing, ACROSS runs.
+   *
+   * Persisted for the same reason `fixRounds` is: a budget that lives only in a local resets every
+   * time the loop is re-entered, so an operator could hand a stuck item unlimited barren rounds by
+   * looping `continue`. `fixRounds` was already persisted and `barren` was not, which made the new
+   * budget weaker than the one it replaced in exactly the situation the escape hatch created.
+   */
+  barrenRounds?: number;
   note?: string;
   sha?: string;
   updatedAt: string;

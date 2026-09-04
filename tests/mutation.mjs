@@ -55,6 +55,30 @@ const MUTATIONS = [
     mutate: (t) => t.replace("  if (pid === null) return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };", "  return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };"),
   },
   {
+    name: "a retired driver reports again after a reload",
+    probe: "probe_lifecycle.ts",
+    file: "state.ts",
+    mutate: (t) => t.replace("  return !d.retired && (generations.get(cwd) ?? 0) === d.generation;", "  return (generations.get(cwd) ?? 0) === d.generation;"),
+  },
+  {
+    name: "a block forgets the phase it stopped in, so re-entry skips implement",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace('    ...(status === "paused" || status === "blocked"', '    ...(status === "paused"'),
+  },
+  {
+    name: "a blocked item revives a stale child id",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace('    // The child id is different: it names a PROCESS, and a stale one must never be revived. Only a\n    // paused item has a child worth resuming.\n    ...(status === "paused"\n', '    ...(status === "paused" || status === "blocked"\n'),
+  },
+  {
+    name: "the barren counter stops being persisted",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("    ...(patch.barrenRounds !== undefined ? { barrenRounds: patch.barrenRounds } : all[id]?.barrenRounds !== undefined ? { barrenRounds: all[id].barrenRounds } : {}),\n", ""),
+  },
+  {
     name: "a superseded driver reports again",
     probe: "probe_lifecycle.ts",
     file: "background.ts",
@@ -288,7 +312,8 @@ const MUTATIONS = [
     name: "a status-less progress patch wipes the pause fields again",
     probe: "probe_audit2.ts",
     file: "store.ts",
-    mutate: (t) => t.replace("    ...(status === \"paused\"", "    ...(patch.status === \"paused\""),
+    // Both retention gates, because they are one rule split by which field is safe to keep.
+    mutate: (t) => t.replaceAll('...(status === "paused"', '...(patch.status === "paused"'),
   },
   {
     name: "an expired supervisor request is reported as pending",

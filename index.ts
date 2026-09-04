@@ -290,13 +290,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   // A driver is a plain in-process loop, so a quit/reload would leave its run lock behind and
-  // make the next session wait out STALE_RUNLOCK_MS. Abort it and drop the lock instead; the
+  // leave a lock behind. The lock is reclaimed by liveness now, so a dead holder no longer blocks
+  // anything — but dropping it here is still right, and the driver is retired so it stops reporting. The
   // item's phase is already in progress.json, so the next run resumes from it.
   pi.on("session_shutdown", (_event, ctx) => {
     const d = drivers.get(ctx.cwd);
     if (!d) return;
     d.stopRequested = true;
     d.hardStopped = true;
+    // Retired explicitly, because the generation counter cannot see this: a reload hands the
+    // extension a fresh module with a fresh counter while THIS loop keeps running against the old
+    // one, so its generation would still match and it would report as if it were current. That is
+    // how a completion arrived carrying a budget from a queue since edited.
+    d.retired = true;
     d.abort.abort();
     if (d.touch) clearInterval(d.touch);
     drivers.delete(ctx.cwd);

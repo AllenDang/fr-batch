@@ -346,8 +346,11 @@ export async function runBatch(
           log(`  WARNING: ${role} thinking:${cfg.thinking} is NOT applied — no model resolved to carry it. Set queue.defaultModel.`);
         }
       }
-      const block = (why: string, scope: "verdict" | "attempt" = "verdict"): string => {
-        setProgress(cwd, item.id, { status: "blocked", note: why, blockScope: scope });
+      const block = (why: string, scope: "verdict" | "attempt" = "verdict", phase?: Phase): string => {
+        // The phase is recorded because an `attempt` block is re-entered WHERE IT STOPPED. Without it
+        // every re-entry landed at verify, so a failed IMPLEMENTER was re-entered by skipping implement
+        // entirely — the item would verify a tree nobody had written.
+        setProgress(cwd, item.id, { status: "blocked", note: why, blockScope: scope, ...(phase ? { pausedPhase: phase } : {}) });
         pi.appendEntry("fr-batch", { item: item.id, status: "blocked", note: why });
         log(`  BLOCKED: ${why}`);
         return [
@@ -547,7 +550,7 @@ export async function runBatch(
             runId: c.runId,
           });
         }
-        return block(`${who} failed to run: ${e.message}`, "attempt");
+        return block(`${who} failed to run: ${e.message}`, "attempt", phase);
       };
 
       /**
@@ -608,7 +611,7 @@ export async function runBatch(
        */
       const resumeFor = (phase: Phase): { resumeOf?: string; resumeMessage?: string } => {
         if (!wasPaused || pausedPhase !== phase || !pausedChildId) return {};
-        if (pauseKind === "stopped") return {}; // see abortStop: that child was abandoned, not stopped
+        if (pauseKind === "stopped") return {}; // see abandonChild: that child was abandoned, not resumable
         if (pauseKind !== "decision") return { resumeOf: pausedChildId };
         return {
           resumeOf: pausedChildId,
@@ -649,7 +652,7 @@ export async function runBatch(
           block,
           handlePause,
           pausedReturn,
-          abortStop,
+          childLaunchFailure,
           decisionStop,
           resumeFor,
           stopNow,
@@ -723,7 +726,11 @@ export async function runBatch(
       let auditAttempt = 0;
       // Consecutive rounds whose fixer closed nothing and rejected nothing. THIS is what the budget
       // bounds — see Queue.maxFixRounds. A productive round resets it to zero.
-      let barren = 0;
+      //
+      // Read from progress and written back every round, like fixRounds: a counter that lived only
+      // here reset on every re-entry, so looping `continue` on a stuck item would hand it unlimited
+      // barren rounds — and re-entry is exactly what the blocked-item escape hatch makes cheap.
+      let barren = progress[item.id]?.barrenRounds ?? 0;
       // Rejections the PREVIOUS round's fixer recorded. A rejection is work: it settles a gap
       // durably, so a round that only rejected is not barren.
       let lastRejections = 0;
@@ -941,6 +948,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         if (round > fixRoundsSoFar) {
           const productive = roundWasProductive(closedNow, lastRejections);
           barren = productive ? 0 : barren + 1;
+          setProgress(cwd, item.id, { fixRounds: round, barrenRounds: barren });
           log(
             productive
               ? `  round ${round} was productive (${closedNow} closed, ${lastRejections} rejected) — barren streak reset`

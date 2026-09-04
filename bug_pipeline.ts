@@ -347,7 +347,14 @@ export interface BugItemCtx {
   block: (why: string) => string;
   handlePause: (phase: Phase, e: NetworkPause, round: number) => Promise<boolean>;
   pausedReturn: (phase: Phase) => string;
-  abortStop: (phase: Phase, round: number) => string | null;
+  /**
+   * A child that never produced an outcome, classified once for BOTH lanes: an operator stop and a
+   * wallclock expiry record an abandonment (re-runnable, and the run id names the loose process),
+   * anything else is an `attempt`-scoped block a plain `run` may re-enter. The bug lane used to
+   * hand-roll `aborted ? abandon : block()`, which lost the timeout case and made every failure
+   * sticky — the same failure with two behaviours, in one file.
+   */
+  childLaunchFailure: (phase: Phase, round: number, who: string, e: Error) => string;
   decisionStop: (phase: Phase, o: ChildOutcome, round: number) => string | null;
   resumeFor: (phase: Phase) => { resumeOf?: string; resumeMessage?: string };
   stopNow: (where: string) => string | null;
@@ -631,8 +638,7 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
             if (await ctx.handlePause("bugfix", e, round)) continue;
             return { outcome: "return", text: ctx.pausedReturn("bugfix") };
           }
-          const stopped = ctx.abortStop("bugfix", round);
-          return { outcome: "return", text: stopped ?? ctx.block(`The bug fixer failed to run: ${(e as Error).message}`) };
+            return { outcome: "return", text: ctx.childLaunchFailure("bugfix", round, "The bug fixer", e as Error) };
         }
       }
       // A decision ask outranks the status check for driver.ts's reason: a child told to stop and

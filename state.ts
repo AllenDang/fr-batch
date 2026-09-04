@@ -47,6 +47,16 @@ export interface LiveDriver {
    * from a driver nobody had told to stop caring.
    */
   generation: number;
+  /**
+   * Set when something outside this driver decided it must stop mattering: a `/reload`, a quit.
+   *
+   * The generation counter cannot cover that case, and it is worth spelling out why. A reload gives
+   * the extension a FRESH module with a fresh `generations` map, while the old loop keeps running
+   * against the OLD module's copy — so the old driver's generation still matches the old counter and
+   * it would report as if it were current. Generation catches two starts inside one module; this
+   * catches a module being replaced under a running loop. Two failure sources, two mechanisms.
+   */
+  retired?: boolean;
   /** Tail of the driver's own log, for `status`. progress.json remains the durable record. */
   lines: string[];
   settled: Promise<void>;
@@ -79,7 +89,7 @@ export function nextGeneration(cwd: string): number {
 
 /** True when this driver is still the one this cwd's operator is waiting on. */
 export function isCurrentGeneration(cwd: string, d: LiveDriver): boolean {
-  return (generations.get(cwd) ?? 0) === d.generation;
+  return !d.retired && (generations.get(cwd) ?? 0) === d.generation;
 }
 export const finishedRuns = new Map<string, FinishedRun>();
 

@@ -200,6 +200,13 @@ console.log("\n--- L: the lock knows who holds it, by liveness not by age");
   ok("L5 a superseded driver reports nothing", sent.length === 0, `${sent.length} message(s)`);
   finishDriver(pi, ctx, r, current, "fr-batch: finished. current", false);
   ok("...and the current one still does", sent.length === 1, `${sent.length} message(s)`);
+  // A RETIRED driver is silent even when its generation still matches. The generation counter cannot
+  // cover a reload: that hands the extension a fresh module with a fresh counter while the old loop
+  // keeps running against the old one, so the old driver's generation still matches and it would
+  // report as if it were current. Two failure sources, two mechanisms.
+  const retired: any = { ...current, retired: true };
+  finishDriver(pi, ctx, r, retired, "fr-batch: finished. from a reloaded module", false);
+  ok("L6 a RETIRED driver is silent even at the current generation", sent.length === 1, `${sent.length} message(s)`);
   drivers.delete(r);
   generations.delete(r);
 }
@@ -304,17 +311,39 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   });
   const out = await run(h);
   ok("R3 an item whose fixer only rejected still commits", loadProgress(r).thing?.status === "committed", `${loadProgress(r).thing?.status} · ${out.split("\n")[0]}`);
+  // The rejection has to have REACHED the ledger, or the row above passes for the wrong reason:
+  // without it there is nothing for `lastRejections` to count.
+  const ledger = readFileSync(join(r, ".pi/fr-batch/thing.gaps.json"), "utf8");
+  ok("...and the fixer's rejection actually reached the ledger", /"rejected"/.test(ledger), ledger.replace(/\s+/g, " ").slice(0, 150));
   // The RULE, asserted directly. Driving the loop into the one state where the two terms differ needs
   // every previously-open gap to have been rejected AND the barren threshold reached before the audit
   // completes — a window narrow enough that an end-to-end row passes for other reasons.
   ok("...and a round that closed nothing but rejected something is PRODUCTIVE", roundWasProductive(0, 1));
   ok("...while a round that did neither is barren", !roundWasProductive(0, 0));
   ok("...and closures alone are productive too", roundWasProductive(2, 0));
-  // The rejection has to have REACHED the ledger, or this row passes for the wrong reason: without
-  // it there is nothing for `lastRejections` to count and the round is productive only because the
-  // auditor stopped reporting the gap, which the closure sweep already covers.
-  const ledger = readFileSync(join(r, ".pi/fr-batch/thing.gaps.json"), "utf8");
-  ok("...and the fixer's rejection actually reached the ledger", /"rejected"/.test(ledger), ledger.replace(/\s+/g, " ").slice(0, 150));
+}
+{
+  // An `attempt` block is re-entered WHERE IT STOPPED. `pausedPhase` used to be retained only while
+  // `status === "paused"`, so a block always dropped it and every re-entry landed at verify — a failed
+  // IMPLEMENTER would be re-entered by skipping implement, verifying a tree nobody had written.
+  const r = repo({});
+  setProgress(r, "thing", { status: "blocked", note: "the implementer failed to run", blockScope: "attempt", pausedPhase: "implement" });
+  const p = loadProgress(r).thing;
+  ok("B4 a block records the phase it stopped in", p?.pausedPhase === "implement", String(p?.pausedPhase));
+  ok("...alongside its scope", p?.blockScope === "attempt", String(p?.blockScope));
+  // The child id is NOT retained: it names a process, and a stale one must never be revived.
+  setProgress(r, "thing", { status: "blocked", pausedChildId: "run-dead" });
+  ok("...but never a stale child id", loadProgress(r).thing?.pausedChildId === undefined, String(loadProgress(r).thing?.pausedChildId));
+}
+{
+  // The barren counter is PERSISTED, like fixRounds. A counter living only in the loop reset on every
+  // re-entry, so looping `continue` on a stuck item would hand it unlimited barren rounds — and
+  // re-entry is exactly what the blocked-item escape hatch makes cheap.
+  const r = repo({ budgets: { maxFixRounds: 2, maxTotalRounds: 20 } });
+  setProgress(r, "thing", { status: "pending", fixRounds: 0, barrenRounds: 1 });
+  ok("R5 barrenRounds survives a progress write", loadProgress(r).thing?.barrenRounds === 1, String(loadProgress(r).thing?.barrenRounds));
+  setProgress(r, "thing", { status: "verifying" });
+  ok("...and a patch that does not name it keeps it", loadProgress(r).thing?.barrenRounds === 1, String(loadProgress(r).thing?.barrenRounds));
 }
 {
   // Alternating one discovery per round never goes barren, so the total cap is what stops it.
