@@ -406,6 +406,37 @@ The mode is **never re-derived** at the gate. An item that captured a red scenar
 runner later stopped writing the sink would otherwise be re-classified into exit mode, read exit 0 as
 green, and commit with the defect unfixed.
 
+### What the bug gate does NOT stop
+
+Written down because a known limit that is not written down is not a known limit. Each of these was
+found by attacking the gate, not by reading it.
+
+**The runner's environment is outside every check.** The fixer holds `bash`, and the pin runs through
+`bash -lc` — a **login** shell, so it sources the operator's profile. A `PATH` entry, an environment
+variable, a gitignored cache directory the runner trusts, or any state outside `pinPaths` can decide
+the verdict, and none of it leaves a trace in git. This is not closable here: a child that can execute
+arbitrary commands can eventually influence any verdict computed on the same machine. **The boundary is
+a sandbox, not this gate.** What the gate does guarantee is that the *pin and the report* are
+byte-identical to what was captured.
+
+**`requirePin` proves a file arrived, not that it asserts anything.** It matches changed paths against
+`pinPattern`. An empty file, a whitespace edit to an existing match, or a deletion of a matching file
+all satisfy it. The deeper guarantee comes from the project's own suite, which runs as `defaultVerify`
+in the same gate — `requirePin` is a fast fail, not a proof.
+
+**`requireMechanismTouch` is a heuristic, and off by default.** It checks that the diff touches a file
+the report's `file:line` citations name. A cosmetic edit to a cited file satisfies it. Only path-qualified
+citations are matched by suffix, so a bare `foo.c:12` no longer matches any same-named file anywhere —
+but the check is file-level, never line-level.
+
+**`.pi/fr-batch/` is gitignored, so no git check sees a write to it.** The captured baseline is read
+once at capture and the gate compares against the in-memory copy, so a mid-item write cannot reach that
+run's verdict — pinned by a test. On **resume** the file is read back, and there the one tamper worth
+making is refused: an all-green scenario map cannot have come from capture, which records an
+already-green pin as `skipped` instead. A subtler edit to a resumed baseline is not caught. Setting
+pi-subagents' `artifactDir` to `session` keeps child transcripts out of the repo but does not change
+this.
+
 ### `skipped`
 
 A pin that is already green when the batch reaches it needs no work, and `committed` would be a lie —

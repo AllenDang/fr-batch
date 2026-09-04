@@ -49,6 +49,18 @@ const MUTATIONS = [
     mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
   },
   {
+    name: "an all-true baseline is accepted on resume",
+    probe: "probe_bug_orchestration.ts",
+    file: "bug_pipeline.ts",
+    mutate: (t) => t.replace('if (parsed.mode === "scenario" && Object.values(parsed.scenarios ?? {}).every((v) => v === true)) {', "if (false) {"),
+  },
+  {
+    name: "the skipped status is not terminal, so the driver re-selects forever",
+    probe: "probe_bug_orchestration.ts",
+    file: "types.ts",
+    mutate: (t) => t.replace('export const isDone = (s: ItemStatus): boolean => s === "committed" || s === "skipped";', 'export const isDone = (s: ItemStatus): boolean => s === "committed";'),
+  },
+  {
     name: "the strict-shrink guard comes back and blocks incremental audit discovery",
     probe: "probe_fr_regression.ts",
     file: "driver.ts",

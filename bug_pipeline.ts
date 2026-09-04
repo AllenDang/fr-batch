@@ -423,8 +423,7 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
         ),
       };
     }
-    if (parsed.fixture !== fixture || parsed.plan !== item.plan) {
-      return {
+    if (parsed.fixture !== fixture || parsed.plan !== item.plan) {      return {
         outcome: "return",
         text: ctx.block(
           [
@@ -433,6 +432,30 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
             `  queue:    fixture ${fixture} · plan ${item.plan}`,
             "",
             `Judging one pin against another's red state is meaningless. Re-capture: fr_batch action "reset", only: "${item.id}".`,
+          ].join("\n"),
+        ),
+      };
+    }
+    // A SCENARIO baseline with no failing row cannot have been produced by capture: capture refuses
+    // an already-green pin and records a `skipped` item instead. So this shape is either a hand-edit
+    // or a fixer's tamper — and it is the tamper worth making, because flipping every row to `true`
+    // deletes every false->true requirement and makes the gate pass on any tree.
+    //
+    // Mid-item this is unreachable (the gate compares against the in-memory copy read at capture),
+    // but `.pi/fr-batch/` is gitignored in a consuming repo, so nothing else can see a write to it
+    // and the RESUME path reads it back.
+    if (parsed.mode === "scenario" && Object.values(parsed.scenarios ?? {}).every((v) => v === true)) {
+      return {
+        outcome: "return",
+        text: ctx.block(
+          [
+            `The captured baseline for "${item.id}" records no failing scenario: ${bpath}`,
+            "",
+            "Capture cannot produce that. An all-green pin is recorded as `skipped`, never as a baseline,",
+            "so this file has been edited since — and an all-true baseline makes the gate pass on any tree,",
+            "because there is no longer anything required to go from failing to passing.",
+            "",
+            `Discard it and capture the pin again: fr_batch action "reset", only: "${item.id}".`,
           ].join("\n"),
         ),
       };
