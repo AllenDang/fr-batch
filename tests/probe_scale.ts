@@ -95,9 +95,21 @@ ok("...but not while a driver may be writing progress.json", (() => {
   return /action "archive"/.test(hushed) && !/action "archive"/.test(s);
 })());
 
+// `all:true` reads TWO files per row already (the frozen contract and the PLAN, for the drift chip)
+// and now a third when an out-of-scope file exists. Seeded on every item so the read path is actually
+// exercised at scale — it was not, and a per-row file read is exactly the thing that turns a status
+// call into a stall on a 300-item queue. Timed, loosely: the number is a smoke alarm, not a budget.
+for (const it of JSON.parse(readFileSync(join(big, ".pi/fr-batch/queue.json"), "utf8")).items as Array<{ id: string }>) {
+  writeFileSync(join(big, ".pi/fr-batch", `${it.id}.out-of-scope.md`), "# findings\n\n- a row the contract does not ask for\n", "utf8");
+}
+const t0 = Date.now();
 const sAll = renderStatus(big, {}, { all: true });
+const allMs = Date.now() - t0;
 const rowCount = (s: string) => (s.match(/^ {2}[✓✗⏸○… ] +\d+\. /gm) ?? []).length;
 ok("all:true lists every row", rowCount(sAll) === 342, String(rowCount(sAll)));
+ok("...and every row's out-of-scope file was actually read", (sAll.match(/out-of-scope:yes/g) ?? []).length > 300, String((sAll.match(/out-of-scope:yes/g) ?? []).length));
+ok("...without any of them being escalated to a verify dispute", !sAll.includes("VERIFY-DISPUTED"));
+ok("...in under 5s for 342 rows with three file reads each", allMs < 5_000, `${allMs}ms`);
 ok("...and folds nothing", !sAll.includes("hidden —"));
 ok("...and drops the summary hint it no longer needs", !sAll.includes("all:true = every row"));
 
