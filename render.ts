@@ -90,7 +90,7 @@ export function itemChips(q: Queue, item: QueueItem, progress: Progress, session
     verifyFor(q, item).isDefault ? "verify:default" : "",
     itemModelLabel(q, item, session) !== baselineModel ? `model:${itemModelLabel(q, item, session)}` : "",
     contractDriftTag(cwd, item),
-    existsSync(outOfScopePath(cwd, item.id)) ? "out-of-scope:yes" : "",
+    outOfScopeTag(cwd, item),
   ]
     .filter(Boolean)
     .join(" ");
@@ -153,6 +153,28 @@ export function renderItemDetail(cwd: string, id: string, session: ChildConfig):
  * noticed the contract and its premise had separated. Two copies of a decision is how the copies
  * drift; this makes the separation visible at the one moment it matters.
  */
+/**
+ * `out-of-scope:yes` is not enough, and the difference matters for exactly one class of finding.
+ *
+ * Everything else in that file is coverage the auditor WANTED and the frozen contract does not ask
+ * for: real follow-up material, but the item is right to ignore it. A `verify_findings` entry is the
+ * opposite — the auditor is disputing the OPERATOR'S OWN gate, e.g. an assertion encoding a value
+ * from before the change, which nothing else in the pipeline reviews. Recorded non-blocking is
+ * correct; recorded and indistinguishable from ordinary wish-list items means nobody opens the file
+ * on a committed item and the review is a self-report with no reader.
+ */
+function outOfScopeTag(cwd: string, item: QueueItem): string {
+  const p = outOfScopePath(cwd, item.id);
+  if (!existsSync(p)) return "";
+  let text = "";
+  try {
+    text = readFileSync(p, "utf8");
+  } catch {
+    return "out-of-scope:yes";
+  }
+  return text.includes("verify gate disagrees") ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";
+}
+
 function contractDriftTag(cwd: string, item: QueueItem): string {
   const p = contractPath(cwd, item.id);
   if (!existsSync(p)) return "";

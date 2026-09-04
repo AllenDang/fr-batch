@@ -397,6 +397,21 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   ok("...while a real hard stop still reads as one", /paused by a hard stop/.test(renderStatus(r)) && !/OUTLIVED/.test(renderStatus(r)));
 }
 {
+  // A verify dispute must be DISTINGUISHABLE in status. Everything else in out-of-scope.md is coverage
+  // the auditor wanted and the contract does not ask for — real follow-up, correctly ignored. A verify
+  // finding is the auditor disputing the OPERATOR'S OWN gate, which nothing else reviews. Tagged the
+  // same as a wish-list item, nobody opens the file on a committed item and the review has no reader.
+  const r = repo({});
+  const dir = join(r, ".pi/fr-batch");
+  mkdirSync(dir, { recursive: true });
+  setProgress(r, "thing", { status: "verifying", fixRounds: 1 });
+  writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n- a row the contract does not ask for\n", "utf8");
+  ok("V4 an ordinary out-of-scope file is tagged, and not escalated", /out-of-scope:yes/.test(renderStatus(r)) && !/VERIFY-DISPUTED/.test(renderStatus(r)));
+  writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n### The project's verify gate disagrees with the PLAN's acceptance text\n\n- `ange_test` asserts 1\n", "utf8");
+  const st = renderStatus(r);
+  ok("...while a dispute about the operator's own gate is called out", /VERIFY-DISPUTED/.test(st), st.split("\n").find((l) => /out-of-scope/.test(l)) ?? "no row");
+}
+{
   // The barren counter is PERSISTED, like fixRounds. A counter living only in the loop reset on every
   // re-entry, so looping `continue` on a stuck item would hand it unlimited barren rounds — and
   // re-entry is exactly what the blocked-item escape hatch makes cheap.

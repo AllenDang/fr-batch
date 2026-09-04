@@ -75,6 +75,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace("          pausedPhase: phase,\n          pausedRound: round,\n", "          pausedRound: round,\n"),
   },
   {
+    name: "a dispute about the operator's own verify gate reads as an ordinary wish-list item",
+    probe: "probe_lifecycle.ts",
+    file: "render.ts",
+    mutate: (t) => t.replace('  return text.includes("verify gate disagrees") ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";', '  return "out-of-scope:yes";'),
+  },
+  {
     name: "a timeout is reported to the operator as their own hard stop",
     probe: "probe_lifecycle.ts",
     file: "render.ts",
