@@ -495,7 +495,10 @@ export async function runBatch(
         // share one mechanism. A third label would only be a name for a path nothing takes.
         cause: { kind: "stopped" | "timeout"; detail: string; runId?: string },
       ): string => {
-        const label = cause.kind === "stopped" ? "HARD STOPPED" : cause.kind === "timeout" ? "TIMED OUT" : "INTERRUPTED";
+        // The label is the ONLY place the cause survives: one pauseKind covers both, because what matters
+        // downstream is that a child was ABANDONED rather than asked to stop. `status` reads this word back
+        // out of the note to tell a budget expiring from the operator's keystroke — a contract, not prose.
+        const label = cause.kind === "stopped" ? "HARD STOPPED" : "TIMED OUT";
         setProgress(cwd, item.id, {
           status: "paused",
           fixRounds: round,

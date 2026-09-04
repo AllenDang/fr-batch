@@ -67,6 +67,14 @@ const MUTATIONS = [
     mutate: (t) => t.replace("budget counts BARREN rounds (nothing closed, nothing rejected)", "gap set must shrink each round"),
   },
   {
+    name: "an abandonment forgets which phase to re-enter",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    // The two-line form is what makes this unique: handlePause also writes `pausedPhase: phase`, but
+    // with pausedChildId between it and pausedRound. Only abandonChild has them adjacent.
+    mutate: (t) => t.replace("          pausedPhase: phase,\n          pausedRound: round,\n", "          pausedRound: round,\n"),
+  },
+  {
     name: "a timeout is reported to the operator as their own hard stop",
     probe: "probe_lifecycle.ts",
     file: "render.ts",

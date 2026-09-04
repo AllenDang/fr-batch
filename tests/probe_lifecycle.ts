@@ -238,6 +238,19 @@ console.log("\n--- A: one abandonment path for every way supervision ends");
   ok("...and the message says it was ABANDONED, not killed", /ABANDONED, not killed/.test(out), out.split("\n").find((l) => /ABANDON/.test(l)) ?? out.split("\n")[0]);
   ok("...and warns its orphaned build or test run will fight yours", /orphaned build|fight yours/.test(out));
   ok("A5 ...and says a plain run re-enters the recorded phase", /re-enters/.test(out));
+
+  // A3: the promise in that sentence, checked as BEHAVIOUR. A5 only asserts the prose, and prose is
+  // exactly what was true while the re-entry silently skipped the phase it claimed to resume.
+  const phase = p?.pausedPhase;
+  ok("A3 the abandonment records which phase to re-enter", phase !== undefined, String(phase));
+  const h2 = fake(r);
+  const again = await run(h2);
+  ok("...and a PLAIN run re-enters it — no operator instruction needed", !/STICKY|STOPPED —/.test(again), again.split("\n")[0]);
+  ok(
+    "...running the phase that was abandoned, not restarting the item",
+    phase === "implement" ? h2.spawned[0] === "fr-implementer" : h2.spawned.length === 0 || h2.spawned[0] !== "fr-implementer",
+    `abandoned at ${phase}, then spawned: ${h2.spawned.join(", ") || "nothing"}`,
+  );
 }
 {
   ok("A2 a WALLCLOCK message carries the run id so it can be interrupted", runIdOfWallclock("WALLCLOCK: child exceeded 5ms [run run-7]") === "run-7", String(runIdOfWallclock("WALLCLOCK: child exceeded 5ms [run run-7]")));
