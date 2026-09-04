@@ -251,7 +251,11 @@ console.log("\n--- A: one abandonment path for every way supervision ends");
   ok("...and a PLAIN run re-enters it — no operator instruction needed", !/STICKY|STOPPED —/.test(again), again.split("\n")[0]);
   ok(
     "...running the phase that was abandoned, not restarting the item",
-    phase === "implement" ? h2.spawned[0] === "fr-implementer" : h2.spawned.length === 0 || h2.spawned[0] !== "fr-implementer",
+    // The abort fires on the FIRST spawn, so the abandoned phase is always `implement` here — asserted
+    // rather than branched on. The old form was `phase === "implement" ? … : length === 0 || [0] !==
+    // "fr-implementer"`, whose else-branch was both unreachable AND vacuous: the second disjunct is
+    // true whenever nothing was spawned, so it would have passed on a re-entry that ran nothing at all.
+    phase === "implement" && h2.spawned[0] === "fr-implementer",
     `abandoned at ${phase}, then spawned: ${h2.spawned.join(", ") || "nothing"}`,
   );
 }

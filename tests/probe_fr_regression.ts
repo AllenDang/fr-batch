@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBatch } from "../driver.ts";
 import { transientHit, transientReason } from "../resilience.ts";
-import { setProgress } from "../store.ts";
+import { loadProgress, setProgress } from "../store.ts";
 import type { ChildOutcome } from "../rpc.ts";
 import { renderStatus } from "../render.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
@@ -200,7 +200,14 @@ console.log("\n--- the FR queue surfaces are unchanged");
   const added = addItem(repo, { plan: "docs/FR_thing_PLAN.md" });
   ok("add still queues an FR item with no kind key", added.includes("queued"), added.split("\n")[0]);
   ok("...and writes no kind field", !readFileSync(join(repo, ".pi/fr-batch/queue.json"), "utf8").includes('"kind"'));
-  ok("reset clears an FR item", resetItem(repo, "thing").includes("reset") || resetItem(repo, "thing").includes("no progress entry"));
+  // ONE call, and it must actually reset something. The old row called resetItem TWICE and accepted
+  // either "reset" or "no progress entry" — so the second call observed the first call's side effect
+  // and the disjunction made both outcomes a pass. It asserted nothing: an item with no progress entry
+  // at all satisfied it.
+  setProgress(repo, "thing", { status: "blocked", fixRounds: 2, note: "something to clear" });
+  const reset = resetItem(repo, "thing");
+  ok("reset clears an FR item", reset.includes("reset"), reset.split("\n")[0]);
+  ok("...and the progress entry is really gone", loadProgress(repo).thing === undefined, JSON.stringify(loadProgress(repo).thing));
 }
 
 

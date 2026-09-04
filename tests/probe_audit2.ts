@@ -124,6 +124,9 @@ const gap = (id: string): AuditGap => ({ id, kind: "branch", what: "w", why_miss
   ok("the item still commits after two unparseable verdicts", /finished/.test(out), out.split("\n")[0]);
   ok("the auditor ran three times (two transport failures + one good verdict)", auditRuns === 3, `auditRuns=${auditRuns}`);
   ok("...and the verify gate ran ONCE, not once per audit attempt", verifyRuns === 1, `verifyRuns=${verifyRuns}`);
+  // Non-vacuous only because the two rows above pin auditRuns === 3: without them "the ledger is
+  // absent" would also be satisfied by an item that never reached the audit at all. Stated, because
+  // the coupling is invisible from this line.
   ok("...and no gap reached the ledger", !existsSync(join(repo, ".pi/fr-batch/x.gaps.json")) || readFileSync(join(repo, ".pi/fr-batch/x.gaps.json"), "utf8").trim() === "{}");
 }
 

@@ -420,9 +420,9 @@ ok("the signature list is a list of regexes", TRANSIENT_SIGNATURES.every((r) => 
   const pathValues = Object.values((co.paths ?? {}) as Record<string, string[]>).flat();
   const rootDirs = ((co.typeRoots ?? []) as string[]);
   ok("every paths target is relative (`./…`), which TS7 requires", pathValues.length > 0 && pathValues.every((p) => p.startsWith("./")), pathValues.join(" "));
-  ok("...and every typeRoots entry too", rootDirs.every((p) => p.startsWith("./")), rootDirs.join(" "));
+  ok("...and every typeRoots entry too", rootDirs.length > 0 && rootDirs.every((p) => p.startsWith("./")), rootDirs.join(" "));
   // The link farm those paths point INTO is built by tests/typecheck.mjs, so the two must agree.
-  ok("...and they point at the .types/ farm typecheck.mjs builds", pathValues.every((p) => p.startsWith("./.types/")), pathValues.join(" "));
+  ok("...and they point at the .types/ farm typecheck.mjs builds", pathValues.length > 0 && pathValues.every((p) => p.startsWith("./.types/")), pathValues.join(" "));
 }
 
 console.log(fails === 0 ? "\nprobe_install: all pass" : `\nprobe_install: ${fails} FAILURE(S)`);
