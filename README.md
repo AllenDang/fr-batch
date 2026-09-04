@@ -601,6 +601,15 @@ goes barren.
 The verify-red loop still counts rounds, deliberately: there the fixer is handed one concrete failing
 command with its output, so a round that leaves it failing produced nothing by definition.
 
+**Know the worst case before you raise it.** At the defaults, one item can spend
+`12 × (3h auditor + 3h fixer + 90m verify)` = **90 hours** before `maxTotalRounds` stops it. The
+round-counting version capped that at 4 rounds, so ~30 hours. Three times the exposure is the price
+of not stopping a converging item, and it is a price you can decline: `maxTotalRounds` is the knob,
+`status` prints it and each item's `barren:N`, and the numbers above are just
+`maxTotalRounds × (2 × childTimeoutMs + verifyTimeoutMs)`. There is deliberately no separate
+wall-clock budget — a third bound on the same loop would be one more thing to keep consistent, and
+these two already express it.
+
 ### Prove freshness by CONTENT, not by timestamp
 
 If your `defaultVerify` checks that a build is current, do not check mtimes:
@@ -883,6 +892,14 @@ whole verify gate, `reset`'s live-driver refusal, that a status-less progress pa
 revival fields, that an expired supervisor request is not reported as a live question, and that
 artifact pruning keeps the audit verdict rather than a fixer report whose filename also ends in
 `-audit-<N>.json`.
+
+**A hard quit records nothing.** `session_shutdown` aborts the loop, retires the driver and drops the
+run lock, but the abandonment note is written by the loop itself as it unwinds — and on a real process
+exit the loop never runs again. So a killed session can leave `progress.json` reading `implementing`
+with no explanation. That is a missing *artifact*, not a stuck item: a stale `implementing` is treated
+as re-enterable and the next `run` picks the item up over the files on disk. Writing the note from the
+shutdown handler would mean duplicating the abandonment record in a second place that cannot know what
+the loop knows, which is the divergence the single abandonment path exists to prevent.
 
 An audit now leaves **two** files: the narration at `<id>-audit-<N>.md` and the machine-readable
 verdict at `<id>-audit-<N>.verdict.json`. One consequence is worth stating because it is silent: an
