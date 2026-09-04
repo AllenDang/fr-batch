@@ -5,7 +5,7 @@
 // faked is process liveness, so those rows use a genuinely live pid (this process's parent) and a pid
 // far above any pid_max.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { finishDriver, startDriver } from "../background.ts";
@@ -15,7 +15,7 @@ import { classifyLaunchFailure, runIdOfWallclock } from "../resilience.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
 import { runlockPath } from "../paths.ts";
 import { renderStatus } from "../render.ts";
-import { acquireRunlock, describeLock, lockHolder, loadProgress, setProgress } from "../store.ts";
+import { acquireRunlock, describeLock, lockHolder, loadProgress, setProgress, touchRunlock } from "../store.ts";
 import { drivers, generations } from "../state.ts";
 
 let fails = 0;
@@ -182,6 +182,17 @@ console.log("\n--- L: the lock knows who holds it, by liveness not by age");
   execFileSync("touch", ["-t", stamp, lp]);
   const recycled = acquireRunlock(r);
   ok("...while the same live pid with a STALE lock is reclaimed as a recycled pid", "release" in recycled, JSON.stringify(recycled));
+  // touchRunlock must ALWAYS move mtime, because a live holder that stops touching now loses its lock
+  // to the recycled-pid rule and ends up sharing the tree. utimesSync can fail where a write succeeds
+  // on some network and container filesystems, so there is a rewrite fallback; this pins that the
+  // observable contract is "mtime is fresh afterwards", by whichever route.
+  writeFileSync(lp, `pid ${LIVE_PID} since now\n`, "utf8");
+  execFileSync("touch", ["-t", stamp, lp]);
+  const before = statSync(lp).mtimeMs;
+  touchRunlock(r);
+  const after = statSync(lp).mtimeMs;
+  ok("L8 touchRunlock always moves mtime forward", after > before && Date.now() - after < 5_000, `${Math.round((Date.now() - after) / 1000)}s old after the touch`);
+  ok("...and leaves the holder line untouched", readFileSync(lp, "utf8").includes(`pid ${LIVE_PID}`), readFileSync(lp, "utf8").trim());
   if ("release" in recycled) recycled.release();
 
   writeFileSync(lp, `pid ${process.pid} since now\n`, "utf8");

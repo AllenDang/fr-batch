@@ -528,8 +528,19 @@ export function touchRunlock(cwd: string): void {
   const now = new Date();
   try {
     utimesSync(p, now, now);
+    return;
   } catch {
-    /* a lock we cannot touch is reported by the next acquire, not here */
+    /* fall through to a rewrite */
+  }
+  // A swallowed failure here is no longer harmless. `lockHolder` treats `alive && mtime stale` as a
+  // RECYCLED pid and reclaims, so a live holder that silently stops touching gets its lock taken and
+  // ends up sharing the tree with a second driver. utimesSync can fail where a write succeeds (some
+  // network and container filesystems refuse it), so the fallback is to rewrite the same bytes, which
+  // updates mtime by definition.
+  try {
+    writeFileSync(p, readFileSync(p, "utf8"), "utf8");
+  } catch {
+    /* the lock is gone or unwritable; the next acquire reports what it finds */
   }
 }
 

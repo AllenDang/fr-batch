@@ -126,6 +126,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace(" · maxTotalRounds ${q.maxTotalRounds}", ""),
   },
   {
+    name: "a lock that cannot be utimes-ed silently stops being touched",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("    utimesSync(p, now, now);\n    return;", "    return;"),
+  },
+  {
     name: "a recycled pid holds the lock forever",
     probe: "probe_lifecycle.ts",
     file: "store.ts",
