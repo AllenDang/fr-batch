@@ -1,5 +1,4 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
 import { CHILD_ROLES, ROLE_LABEL, THINKING_EFFORTS } from "./types.ts";
 import type { ChildConfig, ChildRole, Queue, QueueItem, RoleConfigs, ThinkingEffort } from "./types.ts";
 

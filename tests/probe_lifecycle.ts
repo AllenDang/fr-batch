@@ -5,11 +5,11 @@
 // faked is process liveness, so those rows use a genuinely live pid (this process's parent) and a pid
 // far above any pid_max.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { finishDriver, startDriver } from "../background.ts";
-import { extractAcceptanceSection, roundWasProductive } from "../contract.ts";
+import { VERIFY_DISPUTE_HEADING, extractAcceptanceSection, roundWasProductive } from "../contract.ts";
 import { runBatch } from "../driver.ts";
 import { classifyLaunchFailure, runIdOfWallclock } from "../resilience.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
@@ -397,6 +397,46 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   ok("...while a real hard stop still reads as one", /paused by a hard stop/.test(renderStatus(r)) && !/OUTLIVED/.test(renderStatus(r)));
 }
 {
+  // `status` tells a timeout from a keystroke by parsing the NOTE, which is safe only because exactly
+  // ONE site writes pauseKind "stopped" and it always prefixes the note with a label. That is an
+  // implicit dependency between two files, so it is pinned: a new `pauseKind: "stopped"` writer, or an
+  // abandonment that stops labelling its note, silently makes every timeout read as a hard stop.
+  const src = readFileSync(new URL("../driver.ts", import.meta.url), "utf8");
+  // EVERY source file, not just driver.ts: the invariant is "one writer in the extension", and a new
+  // writer in bug_pipeline.ts or index.ts would escape a driver-only grep while breaking status just
+  // as completely.
+  const allSrc = readdirSync(new URL("..", import.meta.url))
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => [f, readFileSync(new URL(`../${f}`, import.meta.url), "utf8")] as [string, string]);
+  const writers = allSrc.flatMap(([f, t]) => t.split("\n").map((l, n) => [f, n + 1, l] as [string, number, string]).filter(([, , l]) => /pauseKind: "stopped"/.test(l)));
+  ok("V5 exactly one site in the whole extension writes pauseKind \"stopped\"", writers.length === 1, writers.map(([f, n]) => `${f}:${n}`).join(", ") || "none — status has nothing to classify");
+  ok("...and its label is one of the two status knows", /const label = cause.kind === "stopped" \? "HARD STOPPED" : "TIMED OUT";/.test(src));
+  ok("...written as the note's first line", /note: \[\n\s*`\$\{label\} during \$\{phase\}/.test(src));
+}
+{
+  // The four outcome-failure blocks name their phase as a LITERAL, and a wrong literal silently
+  // re-enters the wrong phase — the failure mode is invisible because everything still runs. Checked
+  // structurally rather than by driving four paths: each literal must match the agent spawned above it.
+  const src = readFileSync(new URL("../driver.ts", import.meta.url), "utf8");
+  const lines = src.split("\n");
+  const expect: Record<string, [string, string]> = {
+    implFailure: ["implement", "fr-implementer"],
+    fixVerifyFailure: ["fix-verify", "fr-gap-fixer"],
+    auditFailure: ["audit", "fr-test-auditor"],
+    fixAuditFailure: ["fix-audit", "fr-gap-fixer"],
+  };
+  for (const [v, [phase, agent]] of Object.entries(expect)) {
+    const i2 = lines.findIndex((l) => l.includes(`if (${v}) return block(${v}, "attempt"`));
+    const named = i2 >= 0 && lines[i2].includes(`"attempt", "${phase}"`);
+    ok(`B5 ${v} blocks with phase "${phase}"`, named, i2 >= 0 ? lines[i2].trim() : "call site not found");
+    // The nearest spawn above the block must be the child that phase runs. A literal one phase behind
+    // is the whole failure mode, and it is invisible at runtime because everything still executes.
+    const above = lines.slice(0, i2).filter((l) => /agent: "fr-[a-z-]+"/.test(l));
+    const nearest = (above[above.length - 1]?.match(/agent: "(fr-[a-z-]+)"/) ?? [])[1];
+    ok(`...directly below a ${agent}`, nearest === agent, `nearest spawn above it is ${nearest}`);
+  }
+}
+{
   // A verify dispute must be DISTINGUISHABLE in status. Everything else in out-of-scope.md is coverage
   // the auditor wanted and the contract does not ask for — real follow-up, correctly ignored. A verify
   // finding is the auditor disputing the OPERATOR'S OWN gate, which nothing else reviews. Tagged the
@@ -410,6 +450,15 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n### The project's verify gate disagrees with the PLAN's acceptance text\n\n- `ange_test` asserts 1\n", "utf8");
   const st = renderStatus(r);
   ok("...while a dispute about the operator's own gate is called out", /VERIFY-DISPUTED/.test(st), st.split("\n").find((l) => /out-of-scope/.test(l)) ?? "no row");
+  // The chip is driven by the EXPORTED heading, so writer and reader cannot drift. It used to be the
+  // same sentence typed into two files, and the mutation guarding the pair only edited the reader —
+  // so a change to the writer would have gone unnoticed by construction.
+  ok("...keyed on the exported heading, not a substring typed twice", VERIFY_DISPUTE_HEADING.length > 0 && readFileSync(join(dir, "thing.out-of-scope.md"), "utf8").includes(VERIFY_DISPUTE_HEADING));
+  const hardcoded = readdirSync(new URL("..", import.meta.url))
+    .filter((f) => f.endsWith(".ts"))
+    .flatMap((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8").split("\n").map((l, n) => [f, n + 1, l] as [string, number, string]))
+    .filter(([f, , l]) => l.includes("verify gate disagrees") && f !== "contract.ts");
+  ok("...and no file re-types that sentence", hardcoded.length === 0, hardcoded.map(([f, n]) => `${f}:${n}`).join(", "));
 }
 {
   // The barren counter is PERSISTED, like fixRounds. A counter living only in the loop reset on every

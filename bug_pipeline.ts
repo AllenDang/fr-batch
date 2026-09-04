@@ -344,7 +344,13 @@ export interface BugItemCtx {
   fixRoundsSoFar: number;
 
   spawnFor: (role: ChildRole) => { model?: string };
-  block: (why: string) => string;
+  /**
+  * The SAME `block` the fr lane uses, not a narrowed one. It arrived as `(why) => string`, which made
+  * every bug-lane block verdict-scoped and phase-less BY CONSTRUCTION — the lane could not express
+  * "the attempt failed, re-enter at bugfix" even where that was the truth. A seam that drops an
+  * argument does not simplify its caller, it deletes an outcome from that caller's vocabulary.
+  */
+  block: (why: string, scope?: "verdict" | "attempt", phase?: Phase) => string;
   handlePause: (phase: Phase, e: NetworkPause, round: number) => Promise<boolean>;
   pausedReturn: (phase: Phase) => string;
   /**
@@ -647,7 +653,10 @@ export async function runBugItem(ctx: BugItemCtx): Promise<BugItemResult> {
       const decision = ctx.decisionStop("bugfix", fix, round);
       if (decision) return { outcome: "return", text: decision };
       const failure = ctx.childOutcomeFailure("Bug fixer", fix);
-      if (failure) return { outcome: "return", text: failure };
+      // Recorded as a block, not returned bare. Returning the text alone left the item's status wherever
+      // it had been and progress.json with no trace, so `status` showed the item in flight forever and the
+      // next run re-entered from the top with nothing to read.
+      if (failure) return { outcome: "return", text: ctx.block(failure, "attempt", "bugfix") };
     }
     needFix = true;
 

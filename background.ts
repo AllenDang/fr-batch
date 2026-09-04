@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { runBatch } from "./driver.ts";
 import { runlockPath } from "./paths.ts";
 import { sleep } from "./resilience.ts";

@@ -243,6 +243,17 @@ export function roundWasProductive(closed: number, rejected: number): boolean {
 }
 
 /** Append out-of-contract findings so they survive as follow-up material. */
+/**
+ * The heading that marks a dispute about the OPERATOR'S OWN verify gate, as opposed to ordinary
+ * out-of-contract wish-list findings in the same file.
+ *
+ * Exported because `status` reads it back to decide whether to escalate the chip to VERIFY-DISPUTED.
+ * It was two copies of one string in two files, which drift is made of — and the mutation that was
+ * supposed to protect the pair only ever edited the reader, so a change to the WRITER would have gone
+ * unnoticed. One definition, two users, one mutation that can see both.
+ */
+export const VERIFY_DISPUTE_HEADING = "### The project's verify gate disagrees with the PLAN's acceptance text";
+
 export function recordOutOfScope(
   cwd: string,
   item: QueueItem,
@@ -270,7 +281,7 @@ export function recordOutOfScope(
     ...(verifyFindings.length
       ? [
           "",
-          "### The project's verify gate disagrees with the PLAN's acceptance text",
+          VERIFY_DISPUTE_HEADING,
           "",
           "Non-blocking: the verify block is the operator's, not this item's. But nothing else reviews",
           "those commands, so a line encoding a pre-change value is otherwise unfalsifiable.",

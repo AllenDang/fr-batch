@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { itemModelLabel, modelLabel } from "./config.ts";
-import { extractTestsSection, loadLedger } from "./contract.ts";
+import { VERIFY_DISPUTE_HEADING, extractTestsSection, loadLedger } from "./contract.ts";
 import { contractPath, historyPath, itemStateFiles, outOfScopePath, progressPath, queuePath, runlockPath } from "./paths.ts";
 import { describeLive, drivers, elapsedLabel, finishedRuns } from "./state.ts";
 import { countHistory, loadHistory, loadProgress, loadQueue, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
@@ -141,19 +141,6 @@ export function renderItemDetail(cwd: string, id: string, session: ChildConfig):
  */
 
 /**
- * `contract:frozen`, or `contract:DRIFTED` when the on-disk PLAN's `## Tests` section no longer
- * matches the frozen one.
- *
- * WHY THIS WARNS RATHER THAN BLOCKS. The frozen copy governs grading, and that is correct — an
- * implementer must not widen its own contract mid-item. But NOTHING told the supervisor when the
- * source PLAN was edited underneath a live item, and the two copies then answer "what does this row
- * require?" differently: the auditor grades the frozen text while a fixer reading the PLAN sees the
- * edited one. Measured cost: on `delete-cpu-ops` the §0 was rewritten while `## Tests` was left
- * stale, and TWO consecutive audit rounds reached the same unanswerable question before anyone
- * noticed the contract and its premise had separated. Two copies of a decision is how the copies
- * drift; this makes the separation visible at the one moment it matters.
- */
-/**
  * `out-of-scope:yes` is not enough, and the difference matters for exactly one class of finding.
  *
  * Everything else in that file is coverage the auditor WANTED and the frozen contract does not ask
@@ -172,9 +159,25 @@ function outOfScopeTag(cwd: string, item: QueueItem): string {
   } catch {
     return "out-of-scope:yes";
   }
-  return text.includes("verify gate disagrees") ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";
+  // The HEADING, imported, not a substring guessed at. A loose match on part of that sentence
+  // could also be forged by the auditor's own prose: `verdict.notes` is appended verbatim to this same
+  // file, so an auditor merely REMARKING on the verify gate would raise a dispute chip nobody filed.
+  return text.includes(VERIFY_DISPUTE_HEADING) ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";
 }
 
+/**
+ * `contract:frozen`, or `contract:DRIFTED` when the on-disk PLAN's `## Tests` section no longer
+ * matches the frozen one.
+ *
+ * WHY THIS WARNS RATHER THAN BLOCKS. The frozen copy governs grading, and that is correct — an
+ * implementer must not widen its own contract mid-item. But NOTHING told the supervisor when the
+ * source PLAN was edited underneath a live item, and the two copies then answer "what does this row
+ * require?" differently: the auditor grades the frozen text while a fixer reading the PLAN sees the
+ * edited one. Measured cost: on `delete-cpu-ops` the §0 was rewritten while `## Tests` was left
+ * stale, and TWO consecutive audit rounds reached the same unanswerable question before anyone
+ * noticed the contract and its premise had separated. Two copies of a decision is how the copies
+ * drift; this makes the separation visible at the one moment it matters.
+ */
 function contractDriftTag(cwd: string, item: QueueItem): string {
   const p = contractPath(cwd, item.id);
   if (!existsSync(p)) return "";

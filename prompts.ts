@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { AuditGap, Ledger, Queue, QueueItem } from "./types.ts";
 
 export function frFor(item: QueueItem): string | undefined {

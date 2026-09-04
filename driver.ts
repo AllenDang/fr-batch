@@ -11,7 +11,7 @@ import { makeRpc } from "./rpc.ts";
 import type { ChildOutcome } from "./rpc.ts";
 import { acquireRunlock, artifactDir, kindOf, loadProgress, loadQueue, pruneItemArtifacts, setProgress, statusOf, transientPolicy, transientQuotaPolicy, verifyFor } from "./store.ts";
 import { AUDIT_SCHEMA, CHILD_ROLES, FIX_SCHEMA, UNPARSEABLE_GAP_ID, isDone } from "./types.ts";
-import type { AuditVerdict, ChildConfig, ChildRole, ItemKind, Ledger, LedgerEntry, Log, Phase, Progress, QueueItem } from "./types.ts";
+import type { AuditVerdict, ChildConfig, ChildRole, ItemKind, LedgerEntry, Log, Phase, QueueItem } from "./types.ts";
 
 /** Rows a dry run prints before it starts counting instead of listing. */
 export const DRYRUN_ROWS = 20;
@@ -524,12 +524,6 @@ export async function runBatch(
         ].join("\n");
       };
 
-      /** Non-null only when the operator's hard stop is what ended the wait, so callers can chain it. */
-      const abortStop = (phase: Phase, round: number): string | null => {
-        if (!opts.signal?.aborted) return null;
-        return abandonChild(phase, round, { kind: "stopped", detail: "The operator asked for a hard stop." });
-      };
-
       /**
        * A child never produced an outcome. THREE cases, decided once here rather than four times at
        * the call sites, which is how the timeout came to behave differently from the hard stop.
@@ -680,7 +674,11 @@ export async function runBatch(
             impl = await runChildResilient(
               pi,
               rpc,
-              { agent: "fr-implementer", ...spawnFor("implementer"), task: implementTask(item, q, progress[item.id]?.note), context: "fresh", output: join(dir, `${item.id}-implement.md`) },
+              // `loadProgress`, not the loop's snapshot: the re-entry above WRITES a note ("Re-entered after a
+              // failed attempt. Previous note: …") and this is the child that most needs to read it. The two
+              // sibling call sites already re-read; this one did not, so an implementer re-entering a half-written
+              // tree was the only child told nothing about why.
+              { agent: "fr-implementer", ...spawnFor("implementer"), task: implementTask(item, q, loadProgress(cwd)[item.id]?.note), context: "fresh", output: join(dir, `${item.id}-implement.md`) },
               q.childTimeoutMs,
               opts.signal,
               policy,

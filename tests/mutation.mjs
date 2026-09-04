@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Mutation check: revert each fix, prove the guard suite catches it, restore.
 //
-// This is the answer to the report's sharpest line — 195 assertions stayed green with all three
+// This is the answer to the report's sharpest line — the whole suite stayed green with all three
 // agent definitions deleted, because nothing asserted across a boundary. A guard that cannot go
 // red is not a guard, so every fix in this wave is listed here with the exact source mutation
 // that undoes it and the probe file that must fail.
@@ -78,7 +78,34 @@ const MUTATIONS = [
     name: "a dispute about the operator's own verify gate reads as an ordinary wish-list item",
     probe: "probe_lifecycle.ts",
     file: "render.ts",
-    mutate: (t) => t.replace('  return text.includes("verify gate disagrees") ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";', '  return "out-of-scope:yes";'),
+    // Attacks the READER. Its twin below attacks the WRITER — the previous single row only ever edited
+    // render.ts, so a change to the heading contract.ts writes would have gone unnoticed, which is the
+    // drift the shared constant exists to prevent.
+    mutate: (t) => t.replace('  return text.includes(VERIFY_DISPUTE_HEADING) ? "out-of-scope:yes VERIFY-DISPUTED" : "out-of-scope:yes";', '  return "out-of-scope:yes";'),
+  },
+  {
+    name: "the dispute heading is changed on the WRITER side only",
+    probe: "probe_lifecycle.ts",
+    file: "contract.ts",
+    mutate: (t) => t.replace('export const VERIFY_DISPUTE_HEADING = "### The project\'s verify gate disagrees with the PLAN\'s acceptance text";', 'export const VERIFY_DISPUTE_HEADING = "### verify gate notes";'),
+  },
+  {
+    name: "an outcome-failure block names a phase one behind",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('if (auditFailure) return block(auditFailure, "attempt", "audit");', 'if (auditFailure) return block(auditFailure, "attempt", "implement");'),
+  },
+  {
+    name: "a second site starts writing pauseKind stopped",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('          pauseKind: "network",', '          pauseKind: "stopped",'),
+  },
+  {
+    name: "an abandonment stops labelling its note",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("`${label} during ${phase}: ${cause.detail}`", "`during ${phase}: ${cause.detail}`"),
   },
   {
     name: "a timeout is reported to the operator as their own hard stop",

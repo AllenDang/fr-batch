@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { asEffort, modelLabel, normalizeChildConfig } from "./config.ts";
 import { archiveDir, historyPath, itemStateFiles, progressPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
