@@ -79,6 +79,18 @@ const MUTATIONS = [
     mutate: (t) => t.replace("  if (alive && ageMs >= STALE_RUNLOCK_MS) return { text, pid, alive: false, ageMs };\n", ""),
   },
   {
+    name: "an outcome-failure block forgets its phase, so re-entry skips implement",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('if (implFailure) return block(implFailure, "attempt", "implement");', 'if (implFailure) return block(implFailure, "attempt");'),
+  },
+  {
+    name: "the re-entry writes a status the rest of the loop cannot see",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("          progress = loadProgress(cwd);\n", ""),
+  },
+  {
     name: "a block forgets the phase it stopped in, so re-entry skips implement",
     probe: "probe_lifecycle.ts",
     file: "store.ts",

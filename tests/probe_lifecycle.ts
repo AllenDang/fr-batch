@@ -260,8 +260,20 @@ console.log("\n--- B: a block says what it invalidated");
   const p = loadProgress(r).thing;
   ok("B1 a child that could not run blocks with scope attempt", p?.status === "blocked" && p?.blockScope === "attempt", `${p?.status}/${p?.blockScope}`);
   ok("...and the message names the install problem", /Unknown agent/.test(out));
-  const again = await run(fake(r));
+  // Scope alone is not enough: re-entry needs the PHASE. All four outcome-failure sites passed the
+  // scope and omitted the phase, so a failed implementer was re-entered at verify — over a tree it
+  // may have half-written. Scope says whether to re-enter; phase says where.
+  ok("...and records the phase, so re-entry does not skip implement", p?.pausedPhase === "implement", String(p?.pausedPhase));
+  const h2 = fake(r);
+  const again = await run(h2);
   ok("...and a PLAIN run re-enters it, with no operator instruction", !again.includes("STICKY"), again.split("\n")[0]);
+  // Proven by the SPAWN, not by a log line: the re-entry must actually run an implementer. Asserting on
+  // prose let a run that skipped implement and went straight to a green verify gate pass as a re-entry.
+  ok(
+    "...and actually spawns an implementer rather than going straight to the gate",
+    h2.spawned.includes("fr-implementer"),
+    h2.spawned.join(", ") || "nothing was spawned",
+  );
 }
 {
   // An in-contract gap at budget is `verdict`-scoped: the gate ruled, and only a human can say

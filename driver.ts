@@ -279,7 +279,11 @@ export async function runBatch(
         return `fr-batch: graceful stop — queue was disarmed mid-run. ${committed} item(s) committed. Re-arm and re-run to continue.`;
       }
 
-      const progress = loadProgress(cwd);
+      // Re-read after the re-entry below, not mutated in place: that path WRITES a new status and
+      // everything after it reads this snapshot. Letting the two drift meant a re-entered item was
+      // still `blocked` here, so `st === "pending" || "implementing"` was false and implement was
+      // skipped entirely — the phase was recorded correctly and then never consulted.
+      let progress = loadProgress(cwd);
       const candidates = q.items.filter(inScope);
       const item = candidates.find((i) => !isDone(statusOf(progress, i.id)));
       if (!item) {
@@ -309,6 +313,7 @@ export async function runBatch(
             status: progress[item.id]?.pausedPhase === "implement" ? "implementing" : "verifying",
             note: `${scope === "attempt" ? "Re-entered after a failed attempt" : "Resumed by the operator after a block"}. Previous note: ${progress[item.id]?.note ?? ""}`.slice(0, 4000),
           });
+          progress = loadProgress(cwd);
         } else {
           return [
             `fr-batch: STOPPED — ${item.id} is blocked from an earlier run.`,
@@ -704,7 +709,7 @@ export async function runBatch(
         const implDecision = decisionStop("implement", impl, fixRoundsSoFar);
         if (implDecision) return implDecision;
         const implFailure = childOutcomeFailure("Implementer", impl);
-        if (implFailure) return block(implFailure, "attempt");
+        if (implFailure) return block(implFailure, "attempt", "implement");
         const after = await pi.exec("git", ["status", "--porcelain"], { cwd });
         if ((after.stdout ?? "").trim().length === 0) {
           return block("Implementer reported success but changed no files. Treating as a failure, not a no-op success.");
@@ -797,7 +802,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           // A fixer that never ran cannot have fixed anything, and looping back to verify would
           // spend another round rediscovering the same red gate.
           const fixVerifyFailure = childOutcomeFailure("Fixer (red verify)", fixVerify);
-          if (fixVerifyFailure) return block(fixVerifyFailure, "attempt");
+          if (fixVerifyFailure) return block(fixVerifyFailure, "attempt", "fix-verify");
           continue;
         }
         log("  verify GREEN");
@@ -859,7 +864,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           // one here. Falling through to the verdict parser would classify it as an unparseable
           // verdict and then blame the schema for a bad install or a dead workflow.
           const auditFailure = childOutcomeFailure("Auditor", audit);
-          if (auditFailure) return block(auditFailure, "attempt");
+          if (auditFailure) return block(auditFailure, "attempt", "audit");
 
           // PREFER THE STRUCTURED OUTPUT. The auditor runs with an outputSchema, so
           // its schema-valid verdict arrives on the completion event; the artifact
@@ -1082,7 +1087,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         const fixAuditDecision = decisionStop("fix-audit", fix, round);
         if (fixAuditDecision) return fixAuditDecision;
         const fixAuditFailure = childOutcomeFailure("Fixer (audit gaps)", fix);
-        if (fixAuditFailure) return block(fixAuditFailure, "attempt");
+        if (fixAuditFailure) return block(fixAuditFailure, "attempt", "fix-audit");
 
         // Ingest the fixer's rejections. This is the only way an invalid gap dies: without it
         // the next audit re-raises it, and a re-raise now stops the batch.
