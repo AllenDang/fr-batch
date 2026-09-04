@@ -459,21 +459,11 @@ export async function runBatch(
         ].join("\n");
 
       /**
-       * A hard stop landed while a child was in flight. Recorded as a resumable pause rather
-       * than a block: the operator asked for this, so it must not need a `reset` to clear.
-       *
-       * No child id is kept on purpose. The abort only ended OUR wait — the subagent run is
-       * still alive and may still be writing files, and reviving it later would put two
-       * children in the same tree. The next run re-enters this phase fresh, over whatever the
-       * abandoned child left behind.
-       *
-       * Returns null when nothing was aborted, so callers can chain it before `block`.
-       */
-      /**
        * The driver has stopped supervising a child that may still be alive.
        *
-       * ONE PATH FOR ALL THREE WAYS THAT HAPPENS — an operator's hard stop, the wallclock expiring, and
-       * a `/reload` — because the correct response is identical and only the hard stop had it. The
+       * ONE PATH FOR BOTH WAYS THAT HAPPENS — an operator's hard stop and the wallclock expiring — because
+       * the correct response is identical and only the hard stop had it. (A `/reload` is a third cause
+       * but not a third path: it aborts, so it arrives here as a stop.) The
        * timeout used to `block()`, which is sticky, says nothing about the loose child, and invites an
        * immediate re-run into a tree two children are writing. Reported from a real batch four times:
        * an abandoned child still editing the tree, its orphaned build colliding with the operator's
@@ -997,8 +987,8 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         // if the ledger's distinct-id total did not grow, every id this round was already in it, so
         // every id has a non-empty raisedRounds, so `repeats` fired one guard earlier. `repeats`
         // plus `maxFixRounds` are jointly sufficient. (Nothing in the suite ever pinned the count
-        // check, which is its own evidence: 436 assertions and 31 mutations, none of them touching
-        // a guard that could not catch anything real.)
+        // check, which is its own evidence: a suite this size never pinned a guard that could not
+        // catch anything real.)
         if (repeats.length > 0) {
           const detail = repeats
             .map((id) => `  - ${id} (raised in round(s) ${(ledger[id]?.raisedRounds ?? []).join(", ")}${ledger[id]?.reason ? `; fixer had rejected it: ${ledger[id]?.reason}` : ""})`)

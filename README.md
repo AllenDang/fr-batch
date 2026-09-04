@@ -842,11 +842,14 @@ node tests/run.mjs         # guard tests (~70s)
 node tests/mutation.mjs    # prove each fix's guard goes RED when the fix is reverted (~1min)
 ```
 
-`tests/mutation.mjs` is the answer to this suite's worst moment: 195 assertions stayed green with
+`tests/mutation.mjs` is the answer to this suite's worst moment: the whole suite stayed green with
 all three agent definitions deleted. It reverts each fix in source, runs the probe that is supposed
 to catch it, and fails if the probe stays green — so "verified RED when reverted" is a command
 anyone can re-run instead of a claim in a commit message. It restores every file and re-runs the
-whole suite before it exits. 16 mutations, all currently caught.
+whole suite before it exits, and exits non-zero if any fix is left uncovered — so the current count
+is whatever `node tests/mutation.mjs` reports, not a number in this file that goes stale between
+commits. It has caught dead code twice: a cause-chain unwrap and a `realpathSync` call, both of which
+could not change any outcome and were deleted rather than pinned.
 
 A `pi install git:` copy lives at `~/.pi/agent/git/github.com/AllenDang/fr-batch`, and
 `pi update` **resets and cleans** that clone — so edit your own checkout and point pi at it
