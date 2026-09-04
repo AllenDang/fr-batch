@@ -61,6 +61,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace("  return !d.retired && (generations.get(cwd) ?? 0) === d.generation;", "  return (generations.get(cwd) ?? 0) === d.generation;"),
   },
   {
+    name: "a recycled pid holds the lock forever",
+    probe: "probe_lifecycle.ts",
+    file: "store.ts",
+    mutate: (t) => t.replace("  if (alive && ageMs >= STALE_RUNLOCK_MS) return { text, pid, alive: false, ageMs };\n", ""),
+  },
+  {
     name: "a block forgets the phase it stopped in, so re-entry skips implement",
     probe: "probe_lifecycle.ts",
     file: "store.ts",

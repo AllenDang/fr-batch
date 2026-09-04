@@ -482,6 +482,12 @@ export function lockHolder(cwd: string): { text: string; pid: number | null; ali
   } catch (e) {
     alive = (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
+  // A live pid is not enough. Pids are RECYCLED, so an unrelated process inheriting the number would
+  // make the refusal permanent — strictly worse than the fifteen-minute wait this replaced. A driver
+  // that genuinely holds the lock re-touches it every RUNLOCK_TOUCH_MS, so a lock whose mtime has gone
+  // stale is not held by whatever owns that pid now. This is also the ONLY reader of touchRunlock's
+  // effect: without it the touch interval was a heartbeat nobody listened to.
+  if (alive && ageMs >= STALE_RUNLOCK_MS) return { text, pid, alive: false, ageMs };
   return { text, pid, alive, ageMs };
 }
 

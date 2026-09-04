@@ -13,6 +13,7 @@ import { extractAcceptanceSection, roundWasProductive } from "../contract.ts";
 import { runBatch } from "../driver.ts";
 import { classifyLaunchFailure, runIdOfWallclock } from "../resilience.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
+import { runlockPath } from "../paths.ts";
 import { acquireRunlock, describeLock, lockHolder, loadProgress, setProgress } from "../store.ts";
 import { drivers, generations } from "../state.ts";
 
@@ -160,20 +161,27 @@ const run = (h: { pi: unknown; ctx: unknown }, opts: Record<string, unknown> = {
 console.log("\n--- L: the lock knows who holds it, by liveness not by age");
 {
   const r = repo();
-  const lp = join(r, ".pi/fr-batch/.run.lock");
+  const lp = runlockPath(r);
 
   writeFileSync(lp, `pid ${DEAD_PID} since now\n`, "utf8");
   const got = acquireRunlock(r);
   ok("L1 a lock naming a dead pid is reclaimed however fresh", "release" in got, JSON.stringify(got));
   if ("release" in got) got.release();
 
-  writeFileSync(lp, `pid ${LIVE_PID} since long ago\n`, "utf8");
+  writeFileSync(lp, `pid ${LIVE_PID} since now\n`, "utf8");
+  const held = acquireRunlock(r);
+  ok("L2 a lock naming a live pid that is still being touched is respected", "held" in held, JSON.stringify(held));
+  ok("...and the refusal says which pid and that it is running", "held" in held && /RUNNING/.test(held.held), "held" in held ? held.held : "");
+
+  // ...but a live pid ALONE does not hold it. Pids are recycled, so an unrelated process inheriting the
+  // number would make the refusal permanent — worse than the fifteen-minute wait this replaced. A real
+  // holder re-touches the lock every RUNLOCK_TOUCH_MS, so a stale mtime means that pid is not ours.
   const old = new Date(Date.now() - 60 * 60 * 1000);
   const stamp = `${old.getFullYear()}${String(old.getMonth() + 1).padStart(2, "0")}${String(old.getDate()).padStart(2, "0")}${String(old.getHours()).padStart(2, "0")}${String(old.getMinutes()).padStart(2, "0")}`;
   execFileSync("touch", ["-t", stamp, lp]);
-  const held = acquireRunlock(r);
-  ok("L2 a lock naming a live pid is respected however old", "held" in held, JSON.stringify(held));
-  ok("...and the refusal says which pid and that it is running", "held" in held && /RUNNING/.test(held.held), "held" in held ? held.held : "");
+  const recycled = acquireRunlock(r);
+  ok("...while the same live pid with a STALE lock is reclaimed as a recycled pid", "release" in recycled, JSON.stringify(recycled));
+  if ("release" in recycled) recycled.release();
 
   writeFileSync(lp, `pid ${process.pid} since now\n`, "utf8");
   const ours = acquireRunlock(r);
