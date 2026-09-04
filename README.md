@@ -325,8 +325,8 @@ keeps working untouched.
 
 ```jsonc
 { "id": "L0-base",  "plan": "docs/FR_base_PLAN.md" }                                  // kind:"fr"
-{ "id": "x2-move",  "kind": "bug",
-  "plan": "tests/fixtures/x2_move_axis_clobbers_other_axes_bug/BUG_REPORT.md" }        // fixture = the plan's dir
+{ "id": "clobber",  "kind": "bug",
+  "plan": "tests/fixtures/velocity_clobber_bug/BUG_REPORT.md" }                        // fixture = the plan's dir
 { "id": "foreach",  "kind": "bug",
   "plan": "docs/FIX_foreach_over_event_array.md",
   "fixture": "tests/fixtures/foreach_over_event_array_bug" }                           // report elsewhere
