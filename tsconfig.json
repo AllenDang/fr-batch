@@ -8,7 +8,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "lib": ["es2023", "dom"],
-    "typeRoots": ["./.types/@types"], "types": ["node"],
+    "typeRoots": ["./.types/@types", "./node_modules/@types"], "types": ["node"],
     "paths": {
       "@earendil-works/pi-coding-agent": ["./.types/pi-coding-agent/dist/index.d.ts"],
       "@earendil-works/pi-ai": ["./.types/pi-ai/dist/index.d.ts"],

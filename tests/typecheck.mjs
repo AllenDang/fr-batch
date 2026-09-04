@@ -87,6 +87,28 @@ link(typesDir, "typebox", join(nested, "typebox"));
 link(typesDir, "@types", join(nested, "@types"));
 console.log(`.types/ -> ${pkgRoot}`);
 
+// pi's bundled @types is the FIRST typeRoot, not the only one. A pi update can ship without it — one
+// did, and every check here failed with `Cannot find type definition file for 'node'` while the
+// symlink itself was perfectly valid, because the link resolved to an empty directory. tsconfig
+// therefore also lists ./node_modules/@types, and this says which root actually supplied it, so the
+// next person reads a diagnosis instead of re-deriving one.
+const nodeTypes = [join(typesDir, "@types", "node"), join(repo, "node_modules", "@types", "node")].filter((p) => existsSync(p));
+if (nodeTypes.length === 0) {
+  console.error(
+    [
+      "",
+      "@types/node is in NEITHER type root, so nothing below will resolve:",
+      `  ${join(typesDir, "@types", "node")}   (pi's bundled copy — a pi update may have dropped it)`,
+      `  ${join(repo, "node_modules", "@types", "node")}   (local fallback)`,
+      "",
+      "  npm install --no-save @types/node",
+      "",
+    ].join("\n"),
+  );
+} else {
+  console.log(`@types/node <- ${nodeTypes[0].startsWith(typesDir) ? "pi's bundle" : "local node_modules (pi's bundle has none)"}`);
+}
+
 if (process.argv.includes("--link-only")) process.exit(0);
 
 const tsc = findTsc(pkgRoot);
