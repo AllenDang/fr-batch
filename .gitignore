@@ -7,3 +7,9 @@ node_modules/
 *.log
 *.bak
 .DS_Store
+
+# Design docs and review transcripts stay LOCAL. They quote a consuming project's private source
+# by file:line, its internal engineering docs verbatim, and measured counts from its corpus — none
+# of which belongs in a public repository. The commit messages carry the reasoning that matters;
+# the evidence trail lives beside this checkout, not inside it.
+/docs/

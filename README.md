@@ -197,10 +197,10 @@ unexamined contract rows" — the best trajectory available, blocked as if it we
 
 The premise behind it was that an audit is exhaustive at round 0. It is not: coverage is established
 empirically, a row at a time, so a large matrix takes several rounds to walk and **incremental
-discovery is the normal shape**. Measured on a real batch: a 16-row matrix was exhausted in one round
-with zero gaps, while a 71-row one was still surfacing new rows in round 3 — and it was stopped with
-two rounds of budget left, then idled for hours waiting for a human, for converging correctly. Both
-exits it offered (`reset`, or fix by hand) cost far more than the round it refused to spend.
+discovery is the normal shape**. Observed on a real batch: a small matrix was exhausted in one round
+with zero gaps, while a matrix several times larger was still surfacing new rows in a third round —
+and it was stopped with budget left, then idled for hours waiting for a human, for converging
+correctly. Both exits it offered (`reset`, or fix by hand) cost far more than the round it refused.
 
 Nothing replaced it. Every count-based variant is unreachable behind `repeats`: if the ledger's
 distinct-id total did not grow, every id that round was already in it, so every one has a non-empty
@@ -208,7 +208,7 @@ distinct-id total did not grow, every id that round was already in it, so every 
 
 **What that leaves open, stated rather than hidden:** if one audit round cannot walk a whole matrix,
 then `complete` means "found nothing in what I examined", not "examined everything". A green verdict
-on round 0 of a 71-row contract is therefore weaker than it reads. That is the same vacuity
+on the first round of a large contract is therefore weaker than it reads. That is the same vacuity
 `planTestGate` exists to prevent, one level in — and unlike a false block it is invisible. Closing it
 needs the auditor to report which rows it actually reached, which is a change to its schema and its
 contract, not to this loop.
@@ -382,8 +382,8 @@ one pin and how to read its verdict:
 
 ```jsonc
 "bugProtocol": {
-  "run": ["./bin/ange test {fixture}"],
-  "results": "{fixture}/.ange_test_results.jsonl",   // JSONL: one {name, passed} per line
+  "run": ["./run-one-fixture.sh {fixture}"],         // your project's own runner
+  "results": "{fixture}/.results.jsonl",             // JSONL: one {name, passed} per line
   "redExit": [1], "greenExit": [0], "invalidExit": [2],
   "requirePin": true, "pinPattern": "^tests/test_.*\\.cpp$"
 }
@@ -399,8 +399,9 @@ one pin and how to read its verdict:
 `"results": null` **explicitly unsets** an inherited sink. That sentinel is not cosmetic: a
 field-by-field merge has no spelling for "absent", so a queue that sets `results` for its
 scenario-shaped fixtures would force the same path onto its exit-shaped ones — whose runner never
-writes it — and each would block forever. Measured on ange: **172 of 189 `*_bug` fixtures are
-scenario-shaped and 17 are not**, so one queue certainly holds both.
+writes it — and each would block forever. In a real corpus the two shapes coexist: the large
+majority of fixtures carry a per-scenario record and a minority are exit-code-only probes, so one
+queue certainly holds both.
 
 The mode is **never re-derived** at the gate. An item that captured a red scenario baseline and whose
 runner later stopped writing the sink would otherwise be re-classified into exit mode, read exit 0 as
