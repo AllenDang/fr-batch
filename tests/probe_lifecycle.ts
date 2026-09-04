@@ -14,6 +14,7 @@ import { runBatch } from "../driver.ts";
 import { classifyLaunchFailure, runIdOfWallclock } from "../resilience.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
 import { runlockPath } from "../paths.ts";
+import { renderStatus } from "../render.ts";
 import { acquireRunlock, describeLock, lockHolder, loadProgress, setProgress } from "../store.ts";
 import { drivers, generations } from "../state.ts";
 
@@ -342,6 +343,17 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   // The child id is NOT retained: it names a process, and a stale one must never be revived.
   setProgress(r, "thing", { status: "blocked", pausedChildId: "run-dead" });
   ok("...but never a stale child id", loadProgress(r).thing?.pausedChildId === undefined, String(loadProgress(r).thing?.pausedChildId));
+}
+{
+  // Status has to NAME the budget it enforces. It described the strict-shrink guard for two commits
+  // after that guard was deleted, and never mentioned the cost cap at all — an operator reading it
+  // would tune the wrong knob, or conclude the tool was lying to them.
+  const r = repo({ budgets: { maxFixRounds: 3, maxTotalRounds: 9 } });
+  setProgress(r, "thing", { status: "verifying", fixRounds: 5, barrenRounds: 2 });
+  const st = renderStatus(r);
+  ok("R6 status names the barren budget and the cost cap", /maxFixRounds 3 \(consecutive BARREN rounds\)/.test(st) && /maxTotalRounds 9/.test(st), st.split("\n").find((l) => /budgets:/.test(l)) ?? "no budgets line");
+  ok("...and shows an item's barren count next to its rounds", /fixes:5 barren:2/.test(st), st.split("\n").find((l) => /fixes:/.test(l)) ?? "no fixes line");
+  ok("...and no longer describes the deleted strict-shrink guard", !/must shrink each round/.test(st));
 }
 {
   // The barren counter is PERSISTED, like fixRounds. A counter living only in the loop reset on every

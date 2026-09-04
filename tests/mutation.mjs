@@ -61,6 +61,18 @@ const MUTATIONS = [
     mutate: (t) => t.replace("  return !d.retired && (generations.get(cwd) ?? 0) === d.generation;", "  return (generations.get(cwd) ?? 0) === d.generation;"),
   },
   {
+    name: "status describes the deleted strict-shrink guard again",
+    probe: "probe_lifecycle.ts",
+    file: "render.ts",
+    mutate: (t) => t.replace("budget counts BARREN rounds (nothing closed, nothing rejected)", "gap set must shrink each round"),
+  },
+  {
+    name: "status stops naming the cost cap",
+    probe: "probe_lifecycle.ts",
+    file: "render.ts",
+    mutate: (t) => t.replace(" · maxTotalRounds ${q.maxTotalRounds}", ""),
+  },
+  {
     name: "a recycled pid holds the lock forever",
     probe: "probe_lifecycle.ts",
     file: "store.ts",

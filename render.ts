@@ -84,7 +84,7 @@ export function itemChips(q: Queue, item: QueueItem, progress: Progress, session
   const s = statusOf(progress, item.id);
   return [
     p?.sha ? p.sha : "",
-    p?.fixRounds ? `fixes:${p.fixRounds}` : "",
+    p?.fixRounds ? `fixes:${p.fixRounds}${p.barrenRounds ? ` barren:${p.barrenRounds}` : ""}` : "",
     s === "paused" && p?.pausedPhase ? `at:${p.pausedPhase}` : "",
     s === "paused" ? `pause:${p?.pauseKind ?? "network"}` : "",
     verifyFor(q, item).isDefault ? "verify:default" : "",
@@ -247,7 +247,7 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
   const pol = transientPolicy(q);
   const qpol = transientQuotaPolicy(q);
   return [
-    `fr-batch — armed: ${q.armed} · maxFixRounds: ${q.maxFixRounds} · ${done}/${q.items.length} committed${skipped ? `, ${skipped} skipped` : ""}${archived ? ` · ${archived} archived` : ""}`,
+    `fr-batch — armed: ${q.armed} · barren/total rounds: ${q.maxFixRounds}/${q.maxTotalRounds} · ${done}/${q.items.length} committed${skipped ? `, ${skipped} skipped` : ""}${archived ? ` · ${archived} archived` : ""}`,
     `model: ${baselineModel}${session.model ? ` · session inherit: ${modelLabel(session)}` : " · session model unknown"}`,
     ...(live
       ? [`driver: ${describeLive(live)}`]
@@ -290,7 +290,7 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
           "",
         ]
       : []),
-    "audit: frozen contract per item, out-of-contract findings non-blocking, gap set must shrink each round",
+    "audit: frozen contract per item, out-of-contract findings non-blocking, budget counts BARREN rounds (nothing closed, nothing rejected)",
     `network retry: ${pol.maxRetries} attempt(s), ${Math.round(pol.baseDelayMs / 1000)}s→${Math.round(pol.maxDelayMs / 1000)}s backoff${pol.probeUrl ? `, probe ${pol.probeUrl}` : ", no probe"}${pol.resumeOnRetry ? ", resume-on-retry" : ", respawn-on-retry"}`,
     // Rendered as its OWN line, not folded into the one above: the two budgets are counted
     // separately, so a reader who sees only "6 attempts" would draw the wrong conclusion
@@ -299,7 +299,7 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
     // Rendered because they are RESOLVED values, not the file's: loadQueue fills any budget the
     // queue omits, and a reader has to be able to tell a configured 3h from a defaulted one
     // without diffing queue.json against the defaults.
-    `budgets: child ${elapsedLabel(q.childTimeoutMs)} · verify ${elapsedLabel(q.verifyTimeoutMs)} per gate run · maxFixRounds ${q.maxFixRounds}`,
+    `budgets: child ${elapsedLabel(q.childTimeoutMs)} · verify ${elapsedLabel(q.verifyTimeoutMs)} per gate run · maxFixRounds ${q.maxFixRounds} (consecutive BARREN rounds) · maxTotalRounds ${q.maxTotalRounds}`,
     `queue (yours):     ${queuePath(cwd)}`,
     `progress (driver): ${progressPath(cwd)}`,
   ].join("\n");

@@ -485,7 +485,10 @@ export async function runBatch(
       const abandonChild = (
         phase: Phase,
         round: number,
-        cause: { kind: "stopped" | "timeout" | "reload"; detail: string; runId?: string },
+        // No "reload" case: a reload does not reach here. index.ts aborts the loop and RETIRES the
+        // driver, so the abort arrives as a hard stop — see LiveDriver.retired for why the two cannot
+        // share one mechanism. A third label would only be a name for a path nothing takes.
+        cause: { kind: "stopped" | "timeout"; detail: string; runId?: string },
       ): string => {
         const label = cause.kind === "stopped" ? "HARD STOPPED" : cause.kind === "timeout" ? "TIMED OUT" : "INTERRUPTED";
         setProgress(cwd, item.id, {
