@@ -17,7 +17,34 @@ export function rulesBlock(q: Queue): string {
   return q.repoRules?.trim() ? `\n\nRepo-specific emphasis (your project context file is still the authority):\n${q.repoRules.trim()}\n` : "";
 }
 
-export function implementTask(item: QueueItem, q: Queue): string {
+/**
+ * The operator's standing instruction for THIS item, from progress.json's `note`.
+ *
+ * It reaches the child, and that is a fix rather than a nicety. The note is written by the driver and
+ * read by the operator, so an operator who wrote "the previous round's implementation is parked in
+ * <ref>, retrieve it" into it watched the next child ignore it and rewrite from zero. The same text
+ * placed first in `reads` WAS obeyed — so the difference between the two fields was discoverable
+ * only by trial, which is the actual defect.
+ *
+ * Marked as the operator speaking, so a child cannot mistake it for part of the PLAN.
+ */
+export function noteBlock(note: string | undefined): string {
+  const n = (note ?? "").trim();
+  if (!n) return "";
+  return [
+    "",
+    "",
+    "## Standing instruction from the operator for this item",
+    "",
+    "Not part of the PLAN. This is the batch operator telling you something about the state you are",
+    "starting from — a previous attempt, where its output was parked, what to avoid. Follow it, and say",
+    "in your report what you did with it.",
+    "",
+    n,
+  ].join("\n");
+}
+
+export function implementTask(item: QueueItem, q: Queue, note?: string): string {
   return `Implement this FR PLAN end to end, exactly as written.
 
 Read these first, completely, in this order:
@@ -36,7 +63,7 @@ Rules:
 - Leave the working tree with your changes in place.${rulesBlock(q)}
 
 Report at the end: files created, files edited, the matrix rows you implemented, and any row
-you could NOT implement with the reason.`;
+you could NOT implement with the reason.${noteBlock(note)}`;
 }
 
 export function auditTask(item: QueueItem, contract: string, ledger: Ledger): string {
@@ -106,7 +133,7 @@ If you are unsure about a CONTRACT ROW, it is a gap; if you are unsure about som
 contract never asked for, it is a note.`;
 }
 
-export function fixTask(item: QueueItem, gaps: AuditGap[], notes: string | undefined, q: Queue): string {
+export function fixTask(item: QueueItem, gaps: AuditGap[], notes: string | undefined, q: Queue, note?: string): string {
   const list = gaps
     .map((g, i) => `${i + 1}. [${g.id} · ${g.kind}] ${g.what}\n   why missing: ${g.why_missing}\n   add: ${g.suggested_row}`)
     .join("\n\n");
@@ -136,7 +163,7 @@ A gap you neither close nor reject will simply be re-raised, and a re-raise stop
 
 Do not weaken an existing test to make a new one pass. Do NOT commit.${rulesBlock(q)}
 
-Report by calling structured_output with the required schema.`;
+Report by calling structured_output with the required schema.${noteBlock(note)}`;
 }
 
 // ---------------------------------------------------------------------------

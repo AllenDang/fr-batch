@@ -65,7 +65,7 @@ export function finishDriver(pi: ExtensionAPI, ctx: ExtensionContext, cwd: strin
   }
 }
 
-export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts: { only?: string; answer?: string; kind?: ItemKind }): Promise<string> {
+export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts: { only?: string; answer?: string; kind?: ItemKind; resumeBlocked?: boolean }): Promise<string> {
   const cwd = ctx.cwd;
   const running = drivers.get(cwd);
   if (running) {
@@ -100,7 +100,7 @@ export async function startDriver(pi: ExtensionAPI, ctx: ExtensionContext, opts:
   d.settled = runBatch(
     pi,
     ctx,
-    { signal: d.abort.signal, only: opts.only, kind: opts.kind, answer: opts.answer, background: true, shouldStop: () => d.stopRequested },
+    { signal: d.abort.signal, only: opts.only, kind: opts.kind, answer: opts.answer, resumeBlocked: opts.resumeBlocked, background: true, shouldStop: () => d.stopRequested },
     log,
   )
     .then(

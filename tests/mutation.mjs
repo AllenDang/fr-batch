@@ -49,6 +49,36 @@ const MUTATIONS = [
     mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
   },
   {
+    name: "the undici connect-failure wordings are removed again",
+    probe: "probe_fr_regression.ts",
+    file: "resilience.ts",
+    mutate: (t) => t.replace("  /socket disconnected/i,\n  /before secure TLS connection/i,\n  /pending stream (?:has been )?canceled/i,\n", ""),
+  },
+  {
+    name: "a child that died with no output far inside its budget is a real failure again",
+    probe: "probe_fr_regression.ts",
+    file: "resilience.ts",
+    mutate: (t) => t.replace("  return elapsedMs < budgetMs / 10;", "  return false;"),
+  },
+  {
+    name: "a blocked item has no work-preserving exit",
+    probe: "probe_fr_regression.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace("        if (opts.resumeBlocked && opts.only === item.id) {", "        if (false) {"),
+  },
+  {
+    name: "the audit verdict goes back to sharing the narration's filename",
+    probe: "probe_fr_regression.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('            writeAtomic(verdictPath, `${JSON.stringify(structured, null, 2)}\\n`);\n', ""),
+  },
+  {
+    name: "the operator's note stops reaching the child",
+    probe: "probe_fr_regression.ts",
+    file: "prompts.ts",
+    mutate: (t) => t.replace('  if (!n) return "";', '  return "";'),
+  },
+  {
     name: "an all-true baseline is accepted on resume",
     probe: "probe_bug_orchestration.ts",
     file: "bug_pipeline.ts",

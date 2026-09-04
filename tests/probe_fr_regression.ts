@@ -7,10 +7,13 @@
 //
 // Deliberately byte-legacy: no `kind`, no `fixture`, no `bugProtocol`, no field this change added.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBatch } from "../driver.ts";
+import { transientHit, transientReason } from "../resilience.ts";
+import { setProgress } from "../store.ts";
+import type { ChildOutcome } from "../rpc.ts";
 import { renderStatus } from "../render.ts";
 import { ASYNC_COMPLETE, RPC_REPLY_PREFIX, RPC_REQUEST } from "../rpc.ts";
 import { addItem, archiveItems, removeItem, resetItem } from "../queue_ops.ts";
@@ -66,6 +69,7 @@ function legacyRepo(): string {
 function fake(repo: string, opts: { verdict?: unknown; verdicts?: unknown[] } = {}) {
   const handlers = new Map<string, Set<(d: unknown) => void>>();
   const spawned: string[] = [];
+  const calls: Array<{ method: string; params: unknown }> = [];
   let n = 0;
   let audits = 0;
   const fire = (name: string, p: unknown) => [...(handlers.get(name) ?? [])].forEach((h) => h(p));
@@ -85,6 +89,7 @@ function fake(repo: string, opts: { verdict?: unknown; verdicts?: unknown[] } = 
       },
       emit: (name: string, payload: any) => {
         if (name !== RPC_REQUEST) return void fire(name, payload);
+        calls.push({ method: String(payload.method), params: payload.params });
         const agent = /"agent":\s*"([^"]+)"/.exec(String(payload.params?.workflowScript ?? ""))?.[1] ?? "?";
         spawned.push(agent);
         const asyncId = `run-${++n}`;
@@ -111,7 +116,7 @@ function fake(repo: string, opts: { verdict?: unknown; verdicts?: unknown[] } = 
     appendEntry: () => {},
     sendMessage: () => {},
   };
-  return { pi, ctx: { cwd: repo, hasUI: false, ui: {} } as any, spawned };
+  return { pi, ctx: { cwd: repo, hasUI: false, ui: {} } as any, spawned, calls };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +254,100 @@ console.log("\n--- but a RE-RAISED id still stops the batch");
   const p = JSON.parse(readFileSync(join(repo, ".pi/fr-batch/progress.json"), "utf8"));
   ok("the item is blocked", p.thing?.status === "blocked", p.thing?.status ?? "(none)");
   ok("...for re-litigation, naming the rounds", out.includes("already adjudicated") && out.includes("T1"), out.split("\n").find((l) => l.includes("T1")) ?? "");
+}
+
+
+// ---------------------------------------------------------------------------
+console.log("\n--- the four defects reported from a real 27-item batch");
+{
+  // 1. The exact message that matched zero signatures, so the six-attempt retry loop never ran and
+  //    four items lost hours each. Both halves of it are separately load-bearing: `socket hang up`
+  //    is a different sentence from `socket disconnected`, and `\bTLS\b.*(handshake|alert)` does not
+  //    reach `before secure TLS connection was established`.
+  const reported =
+    "Run 'main' failed: The pending stream has been canceled (caused by: Client network socket " +
+    "disconnected before secure TLS connection was established)";
+  ok("the reported undici connect failure is classified transient", transientHit(reported) !== null, String(transientHit(reported)));
+  ok("...and so is the same message without the outer clause",
+    transientHit("The pending stream has been canceled (caused by: Client network socket disconnected before secure TLS connection was established)") !== null);
+  for (const half of ["Client network socket disconnected before secure TLS connection was established", "The pending stream has been canceled"]) {
+    ok(`...and each half on its own: ${half.slice(0, 34)}…`, transientHit(half) !== null, String(transientHit(half)));
+  }
+  // The cause chain is matched, not just the outermost sentence: a fault named ONLY inside
+  // `(caused by: …)` used to be invisible, and that is where transport faults live.
+  // A fault named only inside `(caused by: …)` is found WITHOUT any chain unwrapping, because the
+  // signatures are unanchored and the parenthesis is part of the string under test. Pinning this
+  // stops the "unwrap the cause chain" suggestion from being re-implemented as dead code: an
+  // unwrapping pass was written, and the mutation suite proved it changed no verdict.
+  const inCause = "Run 'x' failed: the step did not succeed (caused by: ECONNRESET)";
+  ok("a fault named only inside `caused by:` is already matched", transientHit(inCause) === "ECONNRESET", String(transientHit(inCause)));
+  ok("...and the outer clause on its own carries no signature", transientHit("Run 'x' failed: the step did not succeed") === null);
+  ok("...so matching the whole message is sufficient, not a simplification", transientHit("spawn failed (cause: EAI_AGAIN)") === "EAI_AGAIN");
+  ok("...and a genuine failure is still not transient", transientHit("Assertion failed: expected 3, got 4") === null);
+
+  // The wording-independent signal. A child that wrote nothing and died at 7m36s of a 3h budget is
+  // not a considered failure; one that produced a report is, however early it died.
+  const bare = { asyncId: "r", status: "failed", summary: "", error: "" } as ChildOutcome;
+  const H3 = 3 * 3600 * 1000;
+  ok("no output plus death far inside the budget is retried", transientReason(bare, H3, 456_000) !== null, String(transientReason(bare, H3, 456_000)));
+  ok("...but not when the child left a report", transientReason({ ...bare, artifactPath: "/x/r.md" }, H3, 456_000) === null);
+  ok("...nor when it left a summary", transientReason({ ...bare, summary: "could not build" }, H3, 456_000) === null);
+  ok("...nor when it ran most of its budget", transientReason(bare, H3, Math.round(H3 * 0.9)) === null);
+  ok("...and never when the driver stopped it", transientReason({ ...bare, stopped: true }, H3, 456_000) === null);
+}
+{
+  // 2. A blocked item has a non-destructive exit now. `reset` starts over AND leaves the tree dirty,
+  //    so the very next run hit the clean-tree refusal — the reporter parked 1172 verified lines in a
+  //    git ref and watched a fresh child rewrite 187 that then diverged.
+  const repo = legacyRepo();
+  const h = fake(repo, { verdict: { verdict: "gaps_found", gaps: [GAP1] } });
+  const qp = join(repo, ".pi/fr-batch/queue.json");
+  const q = JSON.parse(readFileSync(qp, "utf8"));
+  q.maxFixRounds = 0;
+  writeFileSync(qp, JSON.stringify(q, null, 2), "utf8");
+  await runBatch(h.pi, h.ctx, { background: true }, () => {});
+  ok("the item is blocked", JSON.parse(readFileSync(join(repo, ".pi/fr-batch/progress.json"), "utf8")).thing?.status === "blocked");
+
+  const bare = await runBatch(h.pi, h.ctx, { background: true }, () => {});
+  ok("a bare run still refuses it (the sticky rule is unchanged)", bare.includes("STICKY"), bare.split("\n")[0]);
+  ok("...and now names the work-preserving exit first", bare.includes('action "continue"') && bare.indexOf('action "continue"') < bare.indexOf('action "reset"'));
+  ok("...and warns that reset leaves the tree dirty", bare.includes("does NOT clean the tree"));
+
+  // The resumed run genuinely re-enters the pipeline: it re-audits, the auditor re-raises the same
+  // id, and the re-litigation guard stops it. That is the CORRECT downstream behaviour and it is what
+  // proves the resume happened at all — the sticky refusal never ran the pipeline.
+  const resumed = await runBatch(h.pi, h.ctx, { only: "thing", resumeBlocked: true, background: true }, () => {});
+  ok("continue on that exact id runs the pipeline instead of refusing", !resumed.includes("STICKY"), resumed.split("\n")[0]);
+  ok("...and the contract was NOT re-frozen (the work is kept, not restarted)", existsSync(join(repo, ".pi/fr-batch/thing.contract.md")));
+  ok("...and no fresh implementer ran over it", h.spawned.filter((a) => a === "fr-implementer").length === 1, h.spawned.join(","));
+}
+{
+  // 3. The auditor's output file is its PROSE — it runs outputMode:"file-only" and the schema-valid
+  //    verdict arrives on the completion event. Naming it `.json` made `json.load()` throw for any
+  //    downstream reader.
+  const repo = legacyRepo();
+  const h = fake(repo);
+  await runBatch(h.pi, h.ctx, { background: true }, () => {});
+  const dir = join(repo, ".pi-subagents", "fr-batch");
+  const listing = existsSync(dir) ? readdirSync(dir) : [];
+  const verdicts = listing.filter((f) => f.startsWith("thing-audit-") && f.endsWith(".verdict.json"));
+  ok("the audit verdict is written to a .verdict.json", verdicts.length > 0, listing.join(","));
+  ok("...and it really parses as JSON with the schema's shape", (() => {
+    const v = JSON.parse(readFileSync(join(dir, verdicts[0]), "utf8"));
+    return v.verdict === "complete" && Array.isArray(v.gaps);
+  })());
+  ok("...and no bare thing-audit-N.json is left to be mistaken for it", !listing.some((f) => /^thing-audit-\d+\.json$/.test(f)), listing.join(","));
+}
+{
+  // 4. A note on the item never reached the child: prompts.ts read plan/fr/reads and nothing else, so
+  //    the operator's "the previous round is parked in <ref>, retrieve it" was invisible.
+  const repo = legacyRepo();
+  const h = fake(repo);
+  setProgress(repo, "thing", { status: "pending", note: "RETRIEVE-FROM: refs/wip/thing-round-2" });
+  await runBatch(h.pi, h.ctx, { background: true }, () => {});
+  const spawnTasks = h.calls.filter((c) => String(c.method) === "spawn").map((c) => JSON.stringify(c.params));
+  ok("the operator's note reaches the implementer's task", spawnTasks.some((s) => s.includes("RETRIEVE-FROM")), `${spawnTasks.length} spawn(s)`);
+  ok("...labelled as the operator speaking, not as part of the PLAN", spawnTasks.some((s) => s.includes("Standing instruction from the operator")));
 }
 
 console.log(fails === 0 ? "\nprobe_fr_regression: all pass" : `\nprobe_fr_regression: ${fails} FAILURE(S)`);

@@ -233,7 +233,17 @@ export default function (pi: ExtensionAPI) {
             // run / continue. The batch is NOT awaited here: awaiting it would hold this turn
             // open for hours, and pi only delivers queued user messages between turns — so the
             // operator could neither inspect, extend nor stop the batch they just started.
-            return text(await startDriver(pi, ctx, { only: params.only, kind: params.kind, answer: params.answer }));
+            // `continue` with an explicit id also releases a BLOCKED item: it is the operator
+            // asserting the cause is dealt with, which is the one judgment the driver refuses to
+            // make on its own. A bare `run` still refuses — the sticky rule is unchanged.
+            return text(
+              await startDriver(pi, ctx, {
+                only: params.only,
+                kind: params.kind,
+                answer: params.answer,
+                resumeBlocked: params.action === "continue" && Boolean(params.only),
+              }),
+            );
         }
       } catch (e) {
         return text(`${lines.join("\n")}\n\nfr-batch error: ${(e as Error).message}`.trim(), true);

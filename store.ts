@@ -367,13 +367,33 @@ export function pruneItemArtifacts(cwd: string, id: string, log: Log): void {
   // audit verdict was deleted — and that verdict is the file the commit and block messages point
   // at (`Full verdict: <path>`). Matched by prefix + suffix instead, because an item id is
   // user-supplied and would have to be regex-escaped to appear in a pattern.
+  // `<id>-audit-<N>.verdict.json` ONLY. Two traps here, both paid for once already.
+  //
+  // The first: `/-audit-(\d+)\.json$/` also matched `<id>-fix-audit-<N>.json`, so the "last verdict"
+  // it kept could be the FIXER's report while the audit verdict was deleted — and that verdict is
+  // the file the block messages point at.
+  //
+  // The second: the audit's two outputs used to share the `.json` extension, because the child's
+  // prose narration was written to a file named `.json`. That is fixed at the source (prose is `.md`
+  // now, the verdict is `.verdict.json`), and this matcher follows it. Matched by prefix + suffix
+  // rather than a pattern, because an item id is user-supplied and would have to be regex-escaped.
   const roundOf = (f: string): number => {
     const head = `${id}-audit-`;
-    if (!f.startsWith(head) || !f.endsWith(".json")) return -1;
-    const mid = f.slice(head.length, -".json".length);
+    const tail = ".verdict.json";
+    if (!f.startsWith(head) || !f.endsWith(tail)) return -1;
+    const mid = f.slice(head.length, -tail.length);
+    return /^\d+$/.test(mid) ? Number(mid) : -1;
+  };
+  // The narration beside the last verdict is kept too: it is what a human reads to see HOW the
+  // auditor reached it, and it is useless once its verdict is gone.
+  const narrationOf = (f: string): number => {
+    const head = `${id}-audit-`;
+    if (!f.startsWith(head) || !f.endsWith(".md")) return -1;
+    const mid = f.slice(head.length, -".md".length);
     return /^\d+$/.test(mid) ? Number(mid) : -1;
   };
   const lastVerdict = files.filter((f) => roundOf(f) >= 0).sort((a, b) => roundOf(a) - roundOf(b)).pop();
+  const lastNarration = files.filter((f) => narrationOf(f) >= 0).sort((a, b) => narrationOf(a) - narrationOf(b)).pop();
   // The bug pipeline produces neither an implement report nor an audit verdict, so without its own
   // keep entry every bug-fix report would be deleted at commit — and that report is the only record
   // of what the fixer changed and why. Same prefix+digits+suffix scheme, which collides with
@@ -385,7 +405,7 @@ export function pruneItemArtifacts(cwd: string, id: string, log: Log): void {
     return /^\d+$/.test(mid) ? Number(mid) : -1;
   };
   const lastBugfix = files.filter((f) => bugRoundOf(f) >= 0).sort((a, b) => bugRoundOf(a) - bugRoundOf(b)).pop();
-  const keep = new Set([lastVerdict, lastBugfix, `${id}-implement.md`, `${id}-scope.md`].filter(Boolean) as string[]);
+  const keep = new Set([lastVerdict, lastNarration, lastBugfix, `${id}-implement.md`, `${id}-scope.md`].filter(Boolean) as string[]);
   let freed = 0;
   for (const f of files) {
     if (keep.has(f)) continue;

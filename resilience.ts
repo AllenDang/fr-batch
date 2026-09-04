@@ -112,6 +112,18 @@ export const TRANSIENT_SIGNATURES: RegExp[] = [
   /\bENETUNREACH\b/i,
   /\bENETDOWN\b/i,
   /socket hang up/i,
+  // undici / Node's own connect-failure wording, which none of the neighbours above reach.
+  // Reported from a real batch: `The pending stream has been canceled (caused by: Client network
+  // socket disconnected before secure TLS connection was established)` matched ZERO signatures, so
+  // the six-attempt retry loop never ran and the item blocked. Four items lost hours to it.
+  //
+  // `socket hang up` is a different sentence from `socket disconnected`; `\bTLS\b.*handshake|alert`
+  // does not reach `before secure TLS connection was established`, where TLS is followed by neither
+  // word. Three separate entries rather than one clever pattern, because each half of that message
+  // has been seen on its own.
+  /socket disconnected/i,
+  /before secure TLS connection/i,
+  /pending stream (?:has been )?canceled/i,
   /premature close/i,
   /network (?:error|is unreachable|is down)/i,
   /fetch failed/i,
@@ -154,6 +166,19 @@ export const TRANSIENT_SIGNATURES: RegExp[] = [
   /\baborted\b/i,
 ];
 
+/**
+ * The matched signature, or null.
+ *
+ * Matched against the WHOLE message, which is why no `caused by:` unwrapping happens here. A report
+ * suggested adding it, on the reading that the table only saw the outermost sentence — but every
+ * signature is an unanchored substring pattern, so a fault named only inside `(caused by: ECONNRESET)`
+ * is already found: the parenthesis is part of the string being tested. An unwrapping pass was
+ * written, and the mutation suite proved it could not change a single verdict, because every chain
+ * element is a substring of the text the first element already is. It was removed rather than kept as
+ * a defence that defends nothing.
+ *
+ * What DID need fixing was the table's contents — see the undici entries above.
+ */
 export function transientHit(text: string | undefined): string | null {
   if (!text) return null;
   for (const re of TRANSIENT_SIGNATURES) {
@@ -192,7 +217,26 @@ export function isQuotaReason(reason: string | null | undefined): boolean {
 }
 
 /** Returns the matched signature when the outcome looks like an outage, else null. */
-export function transientReason(o: ChildOutcome): string | null {
+/**
+ * A child that produced NOTHING and died far inside its own budget.
+ *
+ * Wording-independent, and that is the point: the signature table is a list of sentences other
+ * people's libraries happen to emit today, so every entry is one provider upgrade away from being
+ * one word short. This asks a structural question instead — a child that ran 7 minutes against a
+ * 3-hour budget, wrote no report and produced no summary is not a considered failure. A real one
+ * arrives WITH something: a report naming what it could not do, or a non-empty summary.
+ *
+ * Deliberately narrow, because a false positive here costs one resume while a false negative costs
+ * the item: it requires no artifact, no summary, and under a tenth of the budget.
+ */
+export function noOutputEarlyDeath(o: ChildOutcome, budgetMs: number, elapsedMs: number | undefined): boolean {
+  if (o.artifactPath || (o.summary ?? "").trim() || (o.structuredOutput !== undefined && o.structuredOutput !== null)) return false;
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) return false;
+  if (elapsedMs === undefined || !Number.isFinite(elapsedMs)) return false;
+  return elapsedMs < budgetMs / 10;
+}
+
+export function transientReason(o: ChildOutcome, budgetMs?: number, elapsedMs?: number): string | null {
   // A child the driver itself stopped/interrupted, or that blew its wall clock, is
   // never "transient" — those are our decisions or a budget problem.
   if (o.stopped || o.interrupted || o.timedOut) return null;
@@ -201,6 +245,9 @@ export function transientReason(o: ChildOutcome): string | null {
   for (const h of haystacks) {
     const hit = transientHit(h);
     if (hit) return hit;
+  }
+  if (budgetMs !== undefined && noOutputEarlyDeath(o, budgetMs, elapsedMs)) {
+    return `no output, died after ${Math.round((elapsedMs ?? 0) / 1000)}s of a ${Math.round(budgetMs / 1000)}s budget`;
   }
   return null;
 }
@@ -442,6 +489,7 @@ export async function runChildResilient(
 
   for (let attempt = 0; ; attempt++) {
     let liveId: string | undefined;
+    const startedAt = Date.now();
     const watcher = watchSupervisorAsks(() => liveId, policy, log, signal);
 
     let outcome: ChildOutcome | undefined;
@@ -488,8 +536,11 @@ export async function runChildResilient(
       if (asks.length > 0) outcome.decisionAsks = asks;
     }
 
-    if (outcome && !transientReason(outcome)) return outcome; // success OR a real failure
-    const reason = outcome ? transientReason(outcome) : transientThrowReason(thrown!);
+    // The child's own budget and how long it actually lasted, so classification has a
+    // wording-independent signal to fall back on when the signature table is one phrase short.
+    const elapsedMs = Date.now() - startedAt;
+    if (outcome && !transientReason(outcome, timeoutMs, elapsedMs)) return outcome; // success OR a real failure
+    const reason = outcome ? transientReason(outcome, timeoutMs, elapsedMs) : transientThrowReason(thrown!);
     if (!reason) throw thrown; // a real error: wall clock, abort, or an unrecognised fault
     lastReason = reason;
 

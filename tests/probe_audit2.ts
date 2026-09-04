@@ -207,26 +207,39 @@ const gap = (id: string): AuditGap => ({ id, kind: "branch", what: "w", why_miss
 }
 
 // ---------------------------------------------------------------------------
-// 6. prune keeps the AUDIT verdict, and reports what it actually deleted
+// 6. prune keeps the AUDIT verdict AND its narration, and reports what it deleted
 //
-// `-audit-(\d+)\.json$` also matches `-fix-audit-1.json`, so the "last verdict" the prune kept
-// could be the FIXER's report while the audit verdict — the file every commit and block message
+// Two traps. `-audit-(\d+)\.json$` also matched `-fix-audit-1.json`, so the "last verdict" the prune
+// kept could be the FIXER's report while the audit verdict — the file every commit and block message
 // points at as `Full verdict: <path>` — was deleted.
+//
+// And the audit now writes TWO files per round: the child's prose narration (`.md`, which is what
+// `outputMode: "file-only"` actually delivers) and the schema-valid verdict (`.verdict.json`). Both
+// halves of the last round are kept, because a verdict with no narration cannot be reviewed and a
+// narration with no verdict cannot be trusted.
 // ---------------------------------------------------------------------------
 {
   const repo = mkdtempSync(join(tmpdir(), "fr-batch-prune-"));
   const dir = join(repo, ".pi-subagents", "fr-batch");
   mkdirSync(dir, { recursive: true });
   // No `x-implement.md` on disk: it is in `keep`, so the old `files.length - keep.size` undercounted.
-  for (const f of ["x-audit-0.json", "x-audit-1.json", "x-fix-audit-1.json"]) writeFileSync(join(dir, f), "{}");
+  const all = [
+    "x-audit-0.md",
+    "x-audit-0.verdict.json",
+    "x-audit-1.md",
+    "x-audit-1.verdict.json",
+    "x-fix-audit-1.json",
+  ];
+  for (const f of all) writeFileSync(join(dir, f), "{}");
   const lines: string[] = [];
   pruneItemArtifacts(repo, "x", (l) => lines.push(l));
   const said = Number(/pruned (\d+) intermediate/.exec(lines.join("\n"))?.[1] ?? -1);
-  const left = ["x-audit-0.json", "x-audit-1.json", "x-fix-audit-1.json"].filter((f) => existsSync(join(dir, f)));
-  ok("the last AUDIT verdict is kept", left.includes("x-audit-1.json"), left.join(","));
-  ok("...and a fixer report is not mistaken for it", !left.includes("x-fix-audit-1.json"), left.join(","));
-  ok("...and the earlier round's verdict is gone", !left.includes("x-audit-0.json"), left.join(","));
-  ok("the count it reports equals the number it deleted", said === 2, `said ${said}, deleted ${3 - left.length}`);
+  const left = all.filter((f) => existsSync(join(dir, f)));
+  ok("the last AUDIT verdict is kept", left.includes("x-audit-1.verdict.json"), left.join(","));
+  ok("...and its narration with it", left.includes("x-audit-1.md"), left.join(","));
+  ok("...and a fixer report is not mistaken for the verdict", !left.includes("x-fix-audit-1.json"), left.join(","));
+  ok("...and the earlier round is gone, both halves", !left.includes("x-audit-0.verdict.json") && !left.includes("x-audit-0.md"), left.join(","));
+  ok("the count it reports equals the number it deleted", said === all.length - left.length, `said ${said}, deleted ${all.length - left.length}`);
   ok("...and it does not claim to have kept a file that is not there", !/x-implement\.md/.test(lines.join("\n")), lines.join(" | "));
 }
 

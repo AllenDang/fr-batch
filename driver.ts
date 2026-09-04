@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { runBugItem } from "./bug_pipeline.ts";
 import { childSpawnParams, effortUndeliverable, itemModelLabel, modelLabel, resolveChildConfig, sessionChildConfig } from "./config.ts";
 import { AUDIT_PARSE_RETRIES, freezeContract, loadLedger, parseFixReport, parseVerdict, partitionGaps, planTestGate, recordOutOfScope, saveLedger } from "./contract.ts";
-import { contractPath, ledgerPath, queuePath, runlockPath } from "./paths.ts";
-import { auditTask, fixTask, implementTask, readsBlock, rulesBlock } from "./prompts.ts";
+import { contractPath, ledgerPath, queuePath, runlockPath, writeAtomic } from "./paths.ts";
+import { auditTask, fixTask, implementTask, noteBlock, readsBlock, rulesBlock } from "./prompts.ts";
 import { INTERCOM_DETACH_MARK, NetworkPause, formatAsk, runChildResilient } from "./resilience.ts";
 import { makeRpc } from "./rpc.ts";
 import type { ChildOutcome } from "./rpc.ts";
@@ -82,6 +82,20 @@ export async function runBatch(
     kind?: ItemKind;
     dryRun?: boolean;
     answer?: string;
+    /**
+     * The operator asserting that a BLOCKED item's cause is dealt with, so the recorded phase may be
+     * re-entered over the files already on disk.
+     *
+     * The sticky rule stays for a bare `run`: the driver genuinely cannot tell whether a human's fix
+     * invalidated the recorded phase or the frozen contract. But "only reset clears it" made that
+     * judgment cost the work, because `reset` starts over AND leaves the tree dirty, so the very
+     * next `run` hits the clean-tree refusal. Reported from a real batch: a verified implementation
+     * (21 files, 1172 lines, its fixture lane green) had to be parked in a git ref while a fresh
+     * child rewrote 187 lines that then diverged from it.
+     *
+     * So the judgment becomes an explicit operator act instead of an unavoidable loss.
+     */
+    resumeBlocked?: boolean;
     /**
      * True when the loop is driven by the background driver rather than by a tool call
      * that is still holding a turn open. It changes exactly one behaviour: a pause asks
@@ -279,17 +293,33 @@ export async function runBatch(
       }
       if (statusOf(progress, item.id) === "blocked" && (progress[item.id]?.note ?? "").length > 0) {
         const spec = kindOf(item) === "bug" ? "captured baseline" : "frozen contract";
-        return [
-          `fr-batch: STOPPED — ${item.id} is blocked from an earlier run.`,
-          "",
-          progress[item.id]?.note ?? "",
-          "",
-          "A block is STICKY: re-running does not retry it, because the recorded phase and this",
-          `item's ${spec} are still on disk and the driver will not guess which of them the`,
-          "fix invalidated. Once you have fixed the cause, clear the state deliberately:",
-          `  fr_batch action "reset", only: "${item.id}"   — starts over and re-captures the ${spec}`,
-          `  fr_batch action "remove", only: "${item.id}"  — drops it from the queue instead`,
-        ].join("\n");
+        if (opts.resumeBlocked && opts.only === item.id) {
+          // Not a silent retry: the operator named this exact item and asserted the cause is dealt
+          // with. The phase and the spec are still on disk, so this re-enters where it stopped.
+          log(`  resuming a blocked item on the operator's instruction — re-entering "${progress[item.id]?.status}" over the files on disk`);
+          setProgress(cwd, item.id, {
+            status: progress[item.id]?.pausedPhase === "implement" ? "implementing" : "verifying",
+            note: `Resumed by the operator after a block. Previous note: ${progress[item.id]?.note ?? ""}`.slice(0, 4000),
+          });
+        } else {
+          return [
+            `fr-batch: STOPPED — ${item.id} is blocked from an earlier run.`,
+            "",
+            progress[item.id]?.note ?? "",
+            "",
+            "A block is STICKY: re-running does not retry it, because the recorded phase and this",
+            `item's ${spec} are still on disk and the driver will not guess which of them the`,
+            "fix invalidated. Once you have fixed the cause, choose deliberately:",
+            "",
+            `  fr_batch action "continue", only: "${item.id}"   — KEEPS the work: re-enters the recorded`,
+            "       phase over the files already in the tree. Use this when you fixed the cause and the",
+            `       ${spec} still describes what you want.`,
+            `  fr_batch action "reset", only: "${item.id}"      — starts over and re-captures the ${spec}.`,
+            "       It does NOT clean the tree, so commit, stash or discard this item's changes first or",
+            "       the next run refuses them as a dirty tree.",
+            `  fr_batch action "remove", only: "${item.id}"     — drops it from the queue instead.`,
+          ].join("\n");
+        }
       }
 
       log(`\n=== ${item.id} — ${item.plan}`);
@@ -572,7 +602,7 @@ export async function runBatch(
             impl = await runChildResilient(
               pi,
               rpc,
-              { agent: "fr-implementer", ...spawnFor("implementer"), task: implementTask(item, q), context: "fresh", output: join(dir, `${item.id}-implement.md`) },
+              { agent: "fr-implementer", ...spawnFor("implementer"), task: implementTask(item, q, progress[item.id]?.note), context: "fresh", output: join(dir, `${item.id}-implement.md`) },
               q.childTimeoutMs,
               opts.signal,
               policy,
@@ -643,7 +673,7 @@ ${v.tail}
 \`\`\`
 
 Fix the cause, not the symptom: do not delete or weaken a test to make the command pass. If the
-test is right and the implementation is wrong, fix the implementation. Do NOT commit.${rulesBlock(q)}`;
+test is right and the implementation is wrong, fix the implementation. Do NOT commit.${rulesBlock(q)}${noteBlock(loadProgress(cwd)[item.id]?.note)}`;
           let fixVerify: ChildOutcome | undefined;
           for (;;) {
             try {
@@ -682,8 +712,16 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         // suite, up to verifyTimeoutMs PER COMMAND) twice to re-ask one question. Hence this inner
         // loop: only the auditor re-runs.
         let verdict!: AuditVerdict;
-        const verdictPath = join(dir, `${item.id}-audit-${round}.json`);
-        let rawPath = verdictPath;
+        // TWO PATHS, TWO EXTENSIONS. The auditor runs `outputMode: "file-only"`, so what lands in its
+        // output file is the child's PROSE narration — the schema-valid verdict arrives separately on
+        // the completion event. Naming that file `.json` was a lie a downstream reader pays for:
+        // reported from a real batch, `<id>-audit-1.json` opened with "Audit done. Read every landed
+        // test artifact…" and `json.load()` threw, while `-audit-0.json` was 55 bytes of the child's
+        // first sentence. So the prose goes to `.md`, and the verdict is persisted to a file that
+        // really is JSON.
+        const narrationPath = join(dir, `${item.id}-audit-${round}.md`);
+        const verdictPath = join(dir, `${item.id}-audit-${round}.verdict.json`);
+        let rawPath = narrationPath;
         for (;;) {
           setProgress(cwd, item.id, { status: "auditing", fixRounds: round });
           log(auditAttempt > 0 ? `  audit (retry ${auditAttempt}/${AUDIT_PARSE_RETRIES})…` : "  audit…");
@@ -699,7 +737,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
                   context: "fresh",
                   task: auditTask(item, contract, loadLedger(cwd, item.id)),
                   outputSchema: AUDIT_SCHEMA,
-                  output: verdictPath,
+                  output: narrationPath,
                   outputMode: "file-only",
                 },
                 q.childTimeoutMs,
@@ -733,12 +771,18 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
           // this driver kept synthesising AUDIT-UNPARSEABLE and throwing away real
           // gaps. File and summary remain fallbacks for an auditor without a schema.
           const structured = audit.structuredOutput;
-          rawPath = audit.artifactPath && existsSync(audit.artifactPath) ? audit.artifactPath : verdictPath;
+          rawPath = audit.artifactPath && existsSync(audit.artifactPath) ? audit.artifactPath : narrationPath;
           const raw = structured !== undefined && structured !== null
             ? JSON.stringify(structured)
             : existsSync(rawPath)
               ? readFileSync(rawPath, "utf8")
               : audit.summary;
+          // Persisted so a later reader has the verdict WITHOUT re-deriving it from a workflow
+          // receipt it no longer has. Written whenever it parsed, including the retry rounds, so the
+          // file beside the narration always describes that narration.
+          if (structured !== undefined && structured !== null) {
+            writeAtomic(verdictPath, `${JSON.stringify(structured, null, 2)}\n`);
+          }
           verdict = parseVerdict(raw);
 
           // AN UNPARSEABLE VERDICT IS A TRANSPORT FAILURE, NOT A COVERAGE GAP, so it
@@ -855,7 +899,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
         round += 1;
         setProgress(cwd, item.id, { status: "fixing", fixRounds: round });
         log(`  fix round ${round}/${q.maxFixRounds}`);
-        const fixAuditTask = fixTask(item, blocking, verdict.notes, q);
+        const fixAuditTask = fixTask(item, blocking, verdict.notes, q, loadProgress(cwd)[item.id]?.note);
         const fixReportPath = join(dir, `${item.id}-fix-audit-${round}.json`);
         let fix: ChildOutcome | undefined;
         for (;;) {

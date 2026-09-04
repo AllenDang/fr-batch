@@ -215,7 +215,12 @@ export function resetItem(cwd: string, id: string): string {
   // The frozen contract and the gap ledger are part of "from scratch": a re-run must
   // re-freeze against the PLAN as it reads now, not inherit the old snapshot.
   for (const p of dropped) rmSync(p, { force: true });
-  return `fr-batch: reset "${id}" (was ${was})${dropped.length ? `, dropped ${dropped.length} state file(s) — the frozen contract or the captured baseline, whichever this item had` : ""}. It starts over on the next run.`;
+  return `fr-batch: reset "${id}" (was ${was})${dropped.length ? `, dropped ${dropped.length} state file(s) — the frozen contract or the captured baseline, whichever this item had` : ""}. It starts over on the next run.
+${dropped.length || was !== "pending" ? `
+NOTE: reset does NOT touch the working tree, and this item's changes are still in it. The next run
+treats the item as fresh, so its clean-tree guard will refuse them. Commit, stash or discard them
+first — or, if you meant to KEEP that work, use fr_batch action "continue", only: "${id}" instead of
+reset: it re-enters the recorded phase over the files already on disk.` : ""}`;
 }
 
 /**
