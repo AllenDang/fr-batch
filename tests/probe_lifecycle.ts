@@ -433,12 +433,48 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
     const i2 = lines.findIndex((l) => l.includes(`if (${v}) return block(${v}, "attempt"`));
     const named = i2 >= 0 && lines[i2].includes(`"attempt", "${phase}"`);
     ok(`B5 ${v} blocks with phase "${phase}"`, named, i2 >= 0 ? lines[i2].trim() : "call site not found");
+    void agent;
     // The nearest spawn above the block must be the child that phase runs. A literal one phase behind
     // is the whole failure mode, and it is invisible at runtime because everything still executes.
     const above = lines.slice(0, i2).filter((l) => /agent: "fr-[a-z-]+"/.test(l));
     const nearest = (above[above.length - 1]?.match(/agent: "(fr-[a-z-]+)"/) ?? [])[1];
     ok(`...directly below a ${agent}`, nearest === agent, `nearest spawn above it is ${nearest}`);
   }
+}
+{
+  // EVERY block reached from inside a phase must name that phase, not just the four outcome-failure
+  // sites. Scope decides whether a bare `run` may re-enter; PHASE decides where the operator's
+  // `continue only:<id>` lands. Six verdict blocks omitted it and silently resumed at the verify gate
+  // — including "implementer changed no files", where re-entering at verify is certainly wrong because
+  // the tree is provably untouched. A per-site row would have missed them; this counts them.
+  const src = readFileSync(new URL("../driver.ts", import.meta.url), "utf8");
+  const lines = src.split("\n");
+  // The two legitimate exceptions, by line content rather than number:
+  //   the pre-flight test-matrix gate — the item has not started, so there is no phase to resume;
+  //   `childLaunchFailure` — it forwards the phase it was handed, as a variable.
+  const exempt = [/if \(!gate\.ok\) return block\(gate\.why\)/, /failed to run: \$\{e\.message\}`, "attempt", phase\)/, /git (add|commit) failed/];
+  const missing: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\breturn block\(/.test(lines[i])) continue;
+    // Scanned to where the call actually CLOSES, by paren depth. A fixed window silently exempted the
+    // two longest blocks — the ones whose message is a multi-line array — which is the same class of
+    // false green this row exists to prevent.
+    let depth = 0;
+    let call = "";
+    for (let j = i; j < lines.length; j++) {
+      call += lines[j] + "\n";
+      for (const ch of lines[j]) {
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+      }
+      if (depth <= 0) break;
+    }
+    if (exempt.some((re) => re.test(call))) continue;
+    if (!/"(verdict|attempt)",[\s\S]*?"(implement|audit|fix-verify|fix-audit|bugfix|scope)"/.test(call)) {
+      missing.push(`driver.ts:${i + 1} ${lines[i].trim().slice(0, 60)}`);
+    }
+  }
+  ok("B6 every block inside a phase records that phase", missing.length === 0, missing.join(" | ") || "all recorded");
 }
 {
   // A verify dispute must be DISTINGUISHABLE in status. Everything else in out-of-scope.md is coverage

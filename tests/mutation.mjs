@@ -90,6 +90,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace('export const VERIFY_DISPUTE_HEADING = "### The project\'s verify gate disagrees with the PLAN\'s acceptance text";', 'export const VERIFY_DISPUTE_HEADING = "### verify gate notes";'),
   },
   {
+    name: "a verdict block inside a phase stops recording that phase",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: (t) => t.replace('`, "verdict", "fix-verify");', "`);"),
+  },
+  {
     name: "an outcome-failure block names a phase one behind",
     probe: "probe_lifecycle.ts",
     file: "driver.ts",

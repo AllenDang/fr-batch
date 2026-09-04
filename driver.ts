@@ -703,7 +703,11 @@ export async function runBatch(
         if (implFailure) return block(implFailure, "attempt", "implement");
         const after = await pi.exec("git", ["status", "--porcelain"], { cwd });
         if ((after.stdout ?? "").trim().length === 0) {
-          return block("Implementer reported success but changed no files. Treating as a failure, not a no-op success.");
+          // Phase recorded even though this is a VERDICT block. Scope decides whether a bare `run` may
+          // re-enter; phase decides WHERE the operator's `continue only:<id>` lands. Without it this one
+          // resumed at the verify gate over a tree the implementer had provably not touched — the one case
+          // where re-entering at verify is certainly wrong.
+          return block("Implementer reported success but changed no files. Treating as a failure, not a no-op success.", "verdict", "implement");
         }
       } else {
         log(`  resuming at "${st}" (${fixRoundsSoFar} fix round(s) already spent)`);
@@ -747,7 +751,9 @@ export async function runBatch(
           // failing command with its output. A round that leaves it failing produced nothing by
           // definition, so the two counts coincide and a second mechanism would only add surface.
           if (round >= q.maxFixRounds) {
-            return block(`Verify failed after ${round} fix round(s): \`${v.cmd}\` exited ${v.code}.\n\n${v.tail}`);
+            // Re-enters at fix-verify, not implement: the implementation exists and the gate is red, so the
+            // next step is a fixer with that failure in hand, which is exactly this loop.
+            return block(`Verify failed after ${round} fix round(s): \`${v.cmd}\` exited ${v.code}.\n\n${v.tail}`, "verdict", "fix-verify");
           }
           round += 1;
           setProgress(cwd, item.id, { status: "fixing", fixRounds: round });
@@ -899,6 +905,10 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
             return block(
               `Auditor returned an unparseable verdict ${AUDIT_PARSE_RETRIES + 1} time(s). This is the auditor's ` +
                 `TRANSPORT, not a test gap: no gap was filed and the ledger is untouched. Raw head: ${raw.slice(0, 300)}`,
+              "verdict",
+              // Nothing was judged, so re-entry belongs at the audit. Re-running the whole verify gate
+              // would repeat a green gate to recover from a transport failure.
+              "audit",
             );
           }
           auditAttempt++;
@@ -1004,6 +1014,9 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Verdict: ${rawPath}`,
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
+            "verdict",
+            // the gaps are real and adjudicated, so the operator's next move is a fixer round.
+            "fix-audit",
           );
         }
         const list = () => blocking.map((g) => `  - [${g.id} · ${g.kind}] ${g.what}`).join("\n");
@@ -1020,6 +1033,9 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Full verdict: ${rawPath}`,
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
+            "verdict",
+            // the ledger is intact; what stalled is the fixer, so re-entry belongs at the fix round.
+            "fix-audit",
           );
         }
         if (round >= q.maxTotalRounds) {
@@ -1036,6 +1052,9 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Full verdict: ${rawPath}`,
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
+            "verdict",
+            // nothing is wrong with the audit — this is a cost stop, so resume where it stopped.
+            "fix-audit",
           );
         }
 
