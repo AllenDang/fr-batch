@@ -67,6 +67,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace("budget counts BARREN rounds (nothing closed, nothing rejected)", "gap set must shrink each round"),
   },
   {
+    name: "a timeout is reported to the operator as their own hard stop",
+    probe: "probe_lifecycle.ts",
+    file: "render.ts",
+    mutate: (t) => t.replace('  const timedOut = stopped.filter((i) => (progress[i.id]?.note ?? "").startsWith("TIMED OUT"));', "  const timedOut = [];"),
+  },
+  {
     name: "status stops naming the cost cap",
     probe: "probe_lifecycle.ts",
     file: "render.ts",

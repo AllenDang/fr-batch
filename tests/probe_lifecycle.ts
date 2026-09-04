@@ -368,6 +368,19 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   ok("...and no longer describes the deleted strict-shrink guard", !/must shrink each round/.test(st));
 }
 {
+  // `status` must tell a hard stop from a wallclock expiry. One pauseKind covers both — what matters
+  // downstream is that a child was ABANDONED, not which reason — so the cause is read back out of the
+  // note the driver wrote. Reporting both as "paused by a hard stop" told an operator their own
+  // keystroke did what a budget did, and sent them looking for the wrong thing.
+  const r = repo({});
+  setProgress(r, "thing", { status: "paused", fixRounds: 0, pauseKind: "stopped", pausedPhase: "audit", note: "TIMED OUT during audit: the auditor outlived its budget." });
+  const st = renderStatus(r);
+  ok("V3 status reports a timeout as a timeout", /OUTLIVED queue.childTimeoutMs/.test(st), st.split("\n").find((l) => /⏸/.test(l)) ?? "no paused line");
+  ok("...and does NOT call it a hard stop", !/paused by a hard stop/.test(st));
+  setProgress(r, "thing", { status: "paused", fixRounds: 0, pauseKind: "stopped", pausedPhase: "audit", note: "HARD STOPPED during audit: the operator asked for a hard stop." });
+  ok("...while a real hard stop still reads as one", /paused by a hard stop/.test(renderStatus(r)) && !/OUTLIVED/.test(renderStatus(r)));
+}
+{
   // The barren counter is PERSISTED, like fixRounds. A counter living only in the loop reset on every
   // re-entry, so looping `continue` on a stuck item would hand it unlimited barren rounds — and
   // re-entry is exactly what the blocked-item escape hatch makes cheap.

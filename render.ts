@@ -241,6 +241,11 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
   const paused = q.items.filter((i) => statusOf(progress, i.id) === "paused");
   const waiting = paused.filter((i) => progress[i.id]?.pauseKind === "decision");
   const stopped = paused.filter((i) => progress[i.id]?.pauseKind === "stopped");
+  // One pauseKind covers a hard stop and a wallclock expiry, so the CAUSE is read back out of the note
+  // the driver wrote. Reporting both as "paused by a hard stop" told an operator their own keystroke
+  // did something a budget did, which sends them looking for the wrong thing.
+  const timedOut = stopped.filter((i) => (progress[i.id]?.note ?? "").startsWith("TIMED OUT"));
+  const hardStopped = stopped.filter((i) => !(progress[i.id]?.note ?? "").startsWith("TIMED OUT"));
   const outage = paused.filter((i) => (progress[i.id]?.pauseKind ?? "network") === "network");
   const orphans = Object.keys(progress).filter((id) => !q.items.some((i) => i.id === id));
   const archived = countHistory(cwd);
@@ -277,10 +282,18 @@ export function renderStatus(cwd: string, session: ChildConfig = {}, view: Statu
     ...(outage.length > 0
       ? [`⏸ ${outage.length} item(s) paused on a network outage. When the connection is back: fr_batch action "continue".`, ""]
       : []),
-    ...(stopped.length > 0
+    ...(hardStopped.length > 0
       ? [
-          `⏸ ${stopped.length} item(s) paused by a hard stop. Their abandoned child may have left partial edits;`,
+          `⏸ ${hardStopped.length} item(s) paused by a hard stop. Their abandoned child may have left partial edits;`,
           `  fr_batch action "run" re-enters the recorded phase over them, action "reset" starts the item over.`,
+          "",
+        ]
+      : []),
+    ...(timedOut.length > 0
+      ? [
+          `⏸ ${timedOut.length} item(s) paused because a child OUTLIVED queue.childTimeoutMs. It was not killed —`,
+          `  this driver cannot stop a running workflow, so it may still be editing the tree. Each item's note`,
+          `  carries a \`subagent interrupt <run>\` line. Then action "run" re-enters, or raise childTimeoutMs.`,
           "",
         ]
       : []),
