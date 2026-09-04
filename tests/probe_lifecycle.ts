@@ -234,7 +234,10 @@ console.log("\n--- A: one abandonment path for every way supervision ends");
   const h = fake(r, { onSpawn: () => ac.abort() });
   const out = await run(h, { signal: ac.signal });
   const p = loadProgress(r).thing;
-  ok("A1 an abandoned child is recorded as paused, never blocked", p?.status === "paused" || /HARD STOPPED/.test(out), `${p?.status} · ${out.split("\n")[0]}`);
+  // AND, not OR. Measured: both halves hold, so the disjunction only meant either one could rot
+  // unnoticed — and "never blocked" is the claim, which needs the status, while the label is what
+  // `status` later parses back out of the note.
+  ok("A1 an abandoned child is recorded as paused, never blocked", p?.status === "paused" && /HARD STOPPED/.test(out), `${p?.status} · ${out.split("\n")[0]}`);
   ok("...and the message says it was ABANDONED, not killed", /ABANDONED, not killed/.test(out), out.split("\n").find((l) => /ABANDON/.test(l)) ?? out.split("\n")[0]);
   ok("...and warns its orphaned build or test run will fight yours", /orphaned build|fight yours/.test(out));
   ok("A5 ...and says a plain run re-enters the recorded phase", /re-enters/.test(out));

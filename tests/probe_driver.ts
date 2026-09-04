@@ -242,8 +242,11 @@ function makeFake(repo: string, opts: { childDelayMs: number | null; beforeCompl
   const ageMs = Date.now() - statSync(lock).mtimeMs;
   ok("touchRunlock refreshes the lock's mtime", ageMs < 5_000, `${Math.round(ageMs / 1000)}s old`);
   ok("...and keeps the holder line intact", /pid 1 since then/.test(readFileSync(lock, "utf8")));
-  touchRunlock(join(repo, "nope")); // no lock there: must not throw
-  ok("...and touching a missing lock is a no-op", true);
+  // `true` here used to stand in for "the line above did not throw", which reads as a check and is
+  // not one. The observable claim is that touching a path with no lock creates nothing.
+  const absent = join(repo, "nope");
+  touchRunlock(absent);
+  ok("...and touching a missing lock creates nothing", !existsSync(join(absent, ".pi/fr-batch/.run.lock")) && !existsSync(absent));
 }
 
 console.log(fails === 0 ? "\nprobe_driver: all pass" : `\nprobe_driver: ${fails} FAILED`);
