@@ -884,6 +884,12 @@ revival fields, that an expired supervisor request is not reported as a live que
 artifact pruning keeps the audit verdict rather than a fixer report whose filename also ends in
 `-audit-<N>.json`.
 
+An audit now leaves **two** files: the narration at `<id>-audit-<N>.md` and the machine-readable
+verdict at `<id>-audit-<N>.verdict.json`. One consequence is worth stating because it is silent: an
+item audited before that split and committed after it loses its audit artifact, because
+`<id>-audit-<N>.json` matches neither keeper and prune deletes what it does not keep. Nothing else
+reads those files, so the loss is cosmetic — but it is a loss, and it happens without a word.
+
 The probes `import { runBatch } from "../driver.ts"` directly. They used to run against a
 regenerated *copy* of a single 3.5k-line `index.ts` with three fragments rewritten to make it
 executable — a copy that bailed out with "index.ts no longer contains the text this harness

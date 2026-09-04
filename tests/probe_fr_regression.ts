@@ -346,8 +346,12 @@ console.log("\n--- the four defects reported from a real 27-item batch");
   setProgress(repo, "thing", { status: "pending", note: "RETRIEVE-FROM: refs/wip/thing-round-2" });
   await runBatch(h.pi, h.ctx, { background: true }, () => {});
   const spawnTasks = h.calls.filter((c) => String(c.method) === "spawn").map((c) => JSON.stringify(c.params));
-  ok("the operator's note reaches the implementer's task", spawnTasks.some((s) => s.includes("RETRIEVE-FROM")), `${spawnTasks.length} spawn(s)`);
-  ok("...labelled as the operator speaking, not as part of the PLAN", spawnTasks.some((s) => s.includes("Standing instruction from the operator")));
+  ok("an item's note reaches the implementer's task", spawnTasks.some((s) => s.includes("RETRIEVE-FROM")), `${spawnTasks.length} spawn(s)`);
+  // Labelled a RECORD, not an order. progress.json is the driver's file with no operator route into
+  // it, so this text is a block reason or a raw gate tail; heading it "Standing instruction from the
+  // operator ... Follow it" told a child to obey a machine dump as though a human had authored it.
+  ok("...framed as what happened before, not as an instruction to follow", spawnTasks.some((s) => s.includes("What happened here before you")));
+  ok("...and never claims an operator wrote it", !spawnTasks.some((s) => s.includes("Standing instruction from the operator")));
 }
 
 console.log(fails === 0 ? "\nprobe_fr_regression: all pass" : `\nprobe_fr_regression: ${fails} FAILURE(S)`);

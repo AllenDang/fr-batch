@@ -169,10 +169,16 @@ const MUTATIONS = [
     mutate: (t) => t.replace('            writeAtomic(verdictPath, `${JSON.stringify(structured, null, 2)}\\n`);\n', ""),
   },
   {
-    name: "the operator's note stops reaching the child",
+    name: "an item's note stops reaching the child",
     probe: "probe_fr_regression.ts",
     file: "prompts.ts",
     mutate: (t) => t.replace('  if (!n) return "";', '  return "";'),
+  },
+  {
+    name: "the driver's own record is presented as an operator order again",
+    probe: "probe_fr_regression.ts",
+    file: "prompts.ts",
+    mutate: (t) => t.replace('    "## What happened here before you",', '    "## Standing instruction from the operator for this item",'),
   },
   {
     name: "an all-true baseline is accepted on resume",
