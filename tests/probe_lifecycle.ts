@@ -486,6 +486,23 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
     }
   }
   ok("B6 every block inside a phase records that phase", missing.length === 0, missing.join(" | ") || "all recorded");
+
+  // Same off-by-one class, the other family of call sites. B5 checks the four `block` literals; these
+  // are the `handlePause` literals, and a phase one behind here resumes a network pause at the wrong
+  // child. Both families are literals a refactor can move without the compiler noticing, because every
+  // member of the union typechecks everywhere.
+  const phaseOf: Record<string, string> = { "fr-implementer": "implement", "fr-test-auditor": "audit" };
+  const wrong: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /handlePause\("([a-z-]+)"/.exec(lines[i]);
+    if (!m) continue;
+    const spawns = lines.slice(0, i).filter((l) => /agent: "fr-[a-z-]+"/.test(l));
+    const agent = (spawns[spawns.length - 1]?.match(/agent: "(fr-[a-z-]+)"/) ?? [])[1] ?? "?";
+    // The gap-fixer runs both fix phases, so it constrains the literal to that pair rather than to one.
+    const okPhase = agent === "fr-gap-fixer" ? m[1] === "fix-verify" || m[1] === "fix-audit" : phaseOf[agent] === m[1];
+    if (!okPhase) wrong.push(`driver.ts:${i + 1} handlePause("${m[1]}") under ${agent}`);
+  }
+  ok("B7 every handlePause names the phase its own child is running", wrong.length === 0, wrong.join(" | ") || "all four agree with the child above them");
 }
 {
   // A verify dispute must be DISTINGUISHABLE in status. Everything else in out-of-scope.md is coverage

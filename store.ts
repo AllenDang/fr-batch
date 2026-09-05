@@ -487,6 +487,18 @@ export function lockHolder(cwd: string): { text: string; pid: number | null; ali
   // that genuinely holds the lock re-touches it every RUNLOCK_TOUCH_MS, so a lock whose mtime has gone
   // stale is not held by whatever owns that pid now. This is also the ONLY reader of touchRunlock's
   // effect: without it the touch interval was a heartbeat nobody listened to.
+  // Neither signal alone is enough, and the pair has three known failure modes. Written down because
+  // each one is a deliberate direction, not an oversight:
+  //
+  //   pid in another namespace (a container, another user) -> `process.kill` throws EPERM, counted
+  //     ALIVE. Safe: it refuses rather than sharing the tree. Two drivers over one mount in two
+  //     containers stay mutually invisible, which was already true before any of this.
+  //   the host sleeps, or the clock jumps forward past STALE_RUNLOCK_MS -> a live holder reads stale
+  //     for at most RUNLOCK_TOUCH_MS, until its next touch. A 60s window against a 15m threshold.
+  //   the driver is SIGSTOPped -> it lives but stops touching, so after 15m the lock is reclaimed, and
+  //     a later SIGCONT resumes a second writer into the tree. Accepted: a stopped process is
+  //     indistinguishable from a wedged one by any means available here, and refusing forever on a
+  //     process that will never write again is the worse of the two failures.
   if (alive && ageMs >= STALE_RUNLOCK_MS) return { text, pid, alive: false, ageMs };
   return { text, pid, alive, ageMs };
 }

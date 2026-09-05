@@ -17,6 +17,34 @@ const rd = (f) => readFileSync(join(root, f), "utf8");
 const wr = (f, t) => writeFileSync(join(root, f), t);
 
 /** file, a description, and the edit that undoes the fix. `probe` must FAIL after it. */
+/**
+ * A one-line mutation that does not care about indentation.
+ *
+ * 43 of these rows bake leading spaces into their target, and this session produced SIX SKIPs from a
+ * two-space mismatch — a whole class of maintenance for no signal, since the behaviour being pinned has
+ * nothing to do with how deeply the line is nested. `line()` matches on TRIMMED content, THROWS on a
+ * 0-hit or an ambiguous multi-hit (louder than a SKIP, and it names the row), and re-indents the
+ * replacement to whatever the file actually uses.
+ *
+ * Rows whose target spans lines keep an exact `t.replace`: there the surrounding context is what makes
+ * the target unique, so it has to stay literal.
+ */
+export const line =
+  (find, replace) =>
+  (t) => {
+    const want = find.trim();
+    const lines = t.split("\n");
+    const hits = lines.map((l, k) => [k, l]).filter(([, l]) => l.trim() === want);
+    if (hits.length !== 1) {
+      throw new Error(`line(): ${hits.length} line(s) match ${JSON.stringify(want)} — a mutation target must be unique`);
+    }
+    const [k, l] = hits[0];
+    const indent = l.slice(0, l.length - l.trimStart().length);
+    const body = replace === "" ? [] : replace.split("\n").map((r) => (r.trim() === "" ? "" : indent + r.trim()));
+    lines.splice(k, 1, ...body);
+    return lines.join("\n");
+  };
+
 const MUTATIONS = [
   {
     name: "the changed-path set goes back to a tracked-only git diff",
@@ -46,19 +74,19 @@ const MUTATIONS = [
     name: "a results sink may collide with a pin path again",
     probe: "probe_bug.ts",
     file: "store.ts",
-    mutate: (t) => t.replace("    const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "    const collision = undefined;"),
+    mutate: line("const collision = p.pinPaths.map(sub).find((pp) => pp === sink);", "const collision = undefined;"),
   },
   {
     name: "the run lock goes back to judging liveness by file age",
     probe: "probe_lifecycle.ts",
     file: "store.ts",
-    mutate: (t) => t.replace("  if (pid === null) return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };", "  return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };"),
+    mutate: line("if (pid === null) return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };", "return { text, pid: null, alive: ageMs < STALE_RUNLOCK_MS, ageMs };"),
   },
   {
     name: "a retired driver reports again after a reload",
     probe: "probe_lifecycle.ts",
     file: "state.ts",
-    mutate: (t) => t.replace("  return !d.retired && (generations.get(cwd) ?? 0) === d.generation;", "  return (generations.get(cwd) ?? 0) === d.generation;"),
+    mutate: line("return !d.retired && (generations.get(cwd) ?? 0) === d.generation;", "return (generations.get(cwd) ?? 0) === d.generation;"),
   },
   {
     name: "status describes the deleted strict-shrink guard again",
@@ -96,6 +124,12 @@ const MUTATIONS = [
     mutate: (t) => t.replace('`, "verdict", "fix-verify");', "`);"),
   },
   {
+    name: "a handlePause names the phase of the wrong child",
+    probe: "probe_lifecycle.ts",
+    file: "driver.ts",
+    mutate: line('if (await handlePause("audit", e, round)) continue;', 'if (await handlePause("implement", e, round)) continue;'),
+  },
+  {
     name: "an outcome-failure block names a phase one behind",
     probe: "probe_lifecycle.ts",
     file: "driver.ts",
@@ -123,6 +157,7 @@ const MUTATIONS = [
     name: "status stops naming the cost cap",
     probe: "probe_lifecycle.ts",
     file: "render.ts",
+    // A FRAGMENT of a line, not the line: `line()` replaces whole lines, so this one stays exact.
     mutate: (t) => t.replace(" · maxTotalRounds ${q.maxTotalRounds}", ""),
   },
   {
@@ -171,7 +206,7 @@ const MUTATIONS = [
     name: "a superseded driver reports again",
     probe: "probe_lifecycle.ts",
     file: "background.ts",
-    mutate: (t) => t.replace("  if (!isCurrentGeneration(cwd, d)) {", "  if (false) {"),
+    mutate: line("if (!isCurrentGeneration(cwd, d)) {", "if (false) {"),
   },
   {
     name: "a timeout blocks instead of recording an abandonment",
@@ -201,25 +236,25 @@ const MUTATIONS = [
     name: "the fix budget counts rounds again instead of barren rounds",
     probe: "probe_lifecycle.ts",
     file: "driver.ts",
-    mutate: (t) => t.replace("        if (barren >= q.maxFixRounds) {", "        if (round >= q.maxFixRounds) {"),
+    mutate: line("if (barren >= q.maxFixRounds) {", "if (round >= q.maxFixRounds) {"),
   },
   {
     name: "a rejection stops counting as progress",
     probe: "probe_lifecycle.ts",
     file: "contract.ts",
-    mutate: (t) => t.replace("  return closed > 0 || rejected > 0;", "  return closed > 0;"),
+    mutate: line("return closed > 0 || rejected > 0;", "return closed > 0;"),
   },
   {
     name: "the total round cap is removed",
     probe: "probe_lifecycle.ts",
     file: "driver.ts",
-    mutate: (t) => t.replace("        if (round >= q.maxTotalRounds) {", "        if (false) {"),
+    mutate: line("if (round >= q.maxTotalRounds) {", "if (false) {"),
   },
   {
     name: "verify findings stop being recorded",
     probe: "probe_lifecycle.ts",
     file: "driver.ts",
-    mutate: (t) => t.replace("          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes, verifyFindings);", "          recordOutOfScope(cwd, item, round, outOfScope, verdict.notes);"),
+    mutate: line("recordOutOfScope(cwd, item, round, outOfScope, verdict.notes, verifyFindings);", "recordOutOfScope(cwd, item, round, outOfScope, verdict.notes);"),
   },
   {
     name: "the undici connect-failure wordings are removed again",
@@ -231,7 +266,7 @@ const MUTATIONS = [
     name: "a child that died with no output far inside its budget is a real failure again",
     probe: "probe_fr_regression.ts",
     file: "resilience.ts",
-    mutate: (t) => t.replace("  return elapsedMs < budgetMs / 10;", "  return false;"),
+    mutate: line("return elapsedMs < budgetMs / 10;", "return false;"),
   },
   {
     name: "the audit verdict goes back to sharing the narration's filename",
@@ -295,13 +330,13 @@ const MUTATIONS = [
     name: "a duplicate scenario name is last-write-wins again",
     probe: "probe_bug.ts",
     file: "bug_pipeline.ts",
-    mutate: (t) => t.replace("    if (Object.hasOwn(scan.scenarios, name)) {", "    if (false) {"),
+    mutate: line("if (Object.hasOwn(scan.scenarios, name)) {", "if (false) {"),
   },
   {
     name: "the results sink is not deleted before a run, so a stale one is read as the verdict",
     probe: "probe_bug.ts",
     file: "bug_pipeline.ts",
-    mutate: (t) => t.replace("  if (sink) rmSync(join(cwd, sink), { force: true });", ""),
+    mutate: line("if (sink) rmSync(join(cwd, sink), { force: true });", ""),
   },
   {
     name: "BUG_PROTOCOL_DEFAULTS hardcodes one project's runner",
@@ -313,7 +348,7 @@ const MUTATIONS = [
     name: "`results: null` falls through and re-inherits the outer sink",
     probe: "probe_bug.ts",
     file: "store.ts",
-    mutate: (t) => t.replace("    results: merged.results,", "    results: merged.results ?? (q.bugProtocol?.results as string | null) ?? null,"),
+    mutate: line("results: merged.results,", "results: merged.results ?? (q.bugProtocol?.results as string | null) ?? null,"),
   },
   {
     name: "agent definitions are not shipped",
@@ -371,7 +406,7 @@ const MUTATIONS = [
     name: "the gitignore preflight is gone",
     probe: "probe_install.ts",
     file: "driver.ts",
-    mutate: (t) => t.replace("    if (unignored.length > 0) {", "    if (false && unignored.length > 0) {"),
+    mutate: line("if (unignored.length > 0) {", "if (false && unignored.length > 0) {"),
   },
   {
     name: "check-ignore is queried without a trailing slash",
@@ -383,7 +418,7 @@ const MUTATIONS = [
     name: "the scope gate matches a gap id as a bare substring",
     probe: "probe_audit2.ts",
     file: "contract.ts",
-    mutate: (t) => t.replace("      if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;", "      return true;"),
+    mutate: line("if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;", "return true;"),
   },
   {
     name: "an unparseable verdict re-runs the whole verify gate",
