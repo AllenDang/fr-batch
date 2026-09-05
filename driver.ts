@@ -352,9 +352,15 @@ export async function runBatch(
         }
       }
       const block = (why: string, scope: "verdict" | "attempt" = "verdict", phase?: Phase): string => {
-        // The phase is recorded because an `attempt` block is re-entered WHERE IT STOPPED. Without it
-        // every re-entry landed at verify, so a failed IMPLEMENTER was re-entered by skipping implement
-        // entirely — the item would verify a tree nobody had written.
+        // WHAT THE PHASE ACTUALLY DOES, because I overstated this once and a consumer would pay for it.
+        //
+        // It changes ROUTING in exactly one case: `implement`. Re-entry then resumes at implement rather
+        // than handing the verify gate a tree nobody wrote — the defect this was added for.
+        //
+        // For every other phase it changes NOTHING about routing, and that is correct rather than a gap:
+        // re-entry re-runs the verify gate, and it must, because an item whose gate is not green cannot be
+        // audited. What the phase buys there is PROVENANCE — `status` shows `at:<phase>` for blocked items
+        // too, so the operator learns where it stopped instead of inferring it from a note.
         setProgress(cwd, item.id, { status: "blocked", note: why, blockScope: scope, ...(phase ? { pausedPhase: phase } : {}) });
         pi.appendEntry("fr-batch", { item: item.id, status: "blocked", note: why });
         log(`  BLOCKED: ${why}`);
@@ -906,8 +912,8 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Auditor returned an unparseable verdict ${AUDIT_PARSE_RETRIES + 1} time(s). This is the auditor's ` +
                 `TRANSPORT, not a test gap: no gap was filed and the ledger is untouched. Raw head: ${raw.slice(0, 300)}`,
               "verdict",
-              // Nothing was judged, so re-entry belongs at the audit. Re-running the whole verify gate
-              // would repeat a green gate to recover from a transport failure.
+              // Provenance, not routing: re-entry re-runs the verify gate either way. This records that nothing
+              // was JUDGED — the auditor's transport failed and no gap was filed.
               "audit",
             );
           }
@@ -1015,7 +1021,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
             "verdict",
-            // the gaps are real and adjudicated, so the operator's next move is a fixer round.
+            // Provenance: the gaps are real and already adjudicated, so what stopped is the fix loop.
             "fix-audit",
           );
         }
@@ -1034,7 +1040,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
             "verdict",
-            // the ledger is intact; what stalled is the fixer, so re-entry belongs at the fix round.
+            // Provenance: the ledger is intact; what stalled is the fixer.
             "fix-audit",
           );
         }
@@ -1053,7 +1059,7 @@ test is right and the implementation is wrong, fix the implementation. Do NOT co
               `Ledger:  ${ledgerPath(cwd, item.id)}`,
             ].join("\n"),
             "verdict",
-            // nothing is wrong with the audit — this is a cost stop, so resume where it stopped.
+            // Provenance: nothing is wrong with the audit; this is a cost stop.
             "fix-audit",
           );
         }

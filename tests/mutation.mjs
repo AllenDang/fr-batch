@@ -148,6 +148,24 @@ const MUTATIONS = [
     mutate: (t) => t.replace("`${label} during ${phase}: ${cause.detail}`", "`during ${phase}: ${cause.detail}`"),
   },
   {
+    name: "an item blocked before blockScope existed auto-resumes on upgrade",
+    probe: "probe_fr_regression.ts",
+    file: "driver.ts",
+    mutate: line('const scope = progress[item.id]?.blockScope ?? "verdict";', 'const scope = progress[item.id]?.blockScope ?? "attempt";'),
+  },
+  {
+    name: "a blocked item hides where it stopped again",
+    probe: "probe_lifecycle.ts",
+    file: "render.ts",
+    mutate: line('(s === "paused" || s === "blocked") && p?.pausedPhase ? `at:${p.pausedPhase}` : "",', 's === "paused" && p?.pausedPhase ? `at:${p.pausedPhase}` : "",'),
+  },
+  {
+    name: "the bug fixer's failure goes back to being returned bare",
+    probe: "probe_bug_orchestration.ts",
+    file: "bug_pipeline.ts",
+    mutate: line('if (failure) return { outcome: "return", text: ctx.block(failure, "attempt", "bugfix") };', 'if (failure) return { outcome: "return", text: failure };'),
+  },
+  {
     name: "a timeout is reported to the operator as their own hard stop",
     probe: "probe_lifecycle.ts",
     file: "render.ts",

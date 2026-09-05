@@ -85,7 +85,11 @@ export function itemChips(q: Queue, item: QueueItem, progress: Progress, session
   return [
     p?.sha ? p.sha : "",
     p?.fixRounds ? `fixes:${p.fixRounds}${p.barrenRounds ? ` barren:${p.barrenRounds}` : ""}` : "",
-    s === "paused" && p?.pausedPhase ? `at:${p.pausedPhase}` : "",
+    // Shown for BLOCKED too, not only paused. The phase is recorded on every block, and for five of the
+    // six verdict sites it changes no routing — re-entry correctly re-runs the verify gate, because you
+    // cannot audit an item whose gate is not green. So its whole value is telling the operator where the
+    // item stopped, and hiding it for blocked items left it recorded and unreadable.
+    (s === "paused" || s === "blocked") && p?.pausedPhase ? `at:${p.pausedPhase}` : "",
     s === "paused" ? `pause:${p?.pauseKind ?? "network"}` : "",
     verifyFor(q, item).isDefault ? "verify:default" : "",
     itemModelLabel(q, item, session) !== baselineModel ? `model:${itemModelLabel(q, item, session)}` : "",

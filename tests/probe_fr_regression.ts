@@ -361,5 +361,27 @@ console.log("\n--- the four defects reported from a real 27-item batch");
   ok("...and never claims an operator wrote it", !spawnTasks.some((s) => s.includes("Standing instruction from the operator")));
 }
 
+{
+  // THE UPGRADE PATH. An item blocked by a version before `blockScope` existed has neither that field
+  // nor `pausedPhase`. Both defaults must reproduce the OLD behaviour exactly, and nothing pinned that:
+  // `?? "verdict"` keeps it sticky, and an absent phase lands re-entry at the verify gate, which is
+  // where every re-entry used to land. Getting either default backwards would silently auto-resume
+  // items a human had been asked to look at.
+  const repo = legacyRepo();
+  writeFileSync(
+    join(repo, ".pi/fr-batch/progress.json"),
+    JSON.stringify({ thing: { status: "blocked", fixRounds: 2, note: "Verify failed after 2 fix round(s).", updatedAt: new Date().toISOString() } }),
+    "utf8",
+  );
+  const bare = await runBatch(fake(repo).pi, fake(repo).ctx, { background: true }, () => {});
+  ok("a pre-blockScope blocked item is still STICKY under a bare run", /STOPPED — thing is blocked/.test(bare), bare.split("\n")[0]);
+  ok("...and nothing was spawned for it", loadProgress(repo).thing?.status === "blocked", String(loadProgress(repo).thing?.status));
+
+  const h2 = fake(repo);
+  await runBatch(h2.pi, h2.ctx, { background: true, only: "thing", resumeBlocked: true }, () => {});
+  // No pausedPhase on the old entry, so re-entry belongs at the gate — the pre-change behaviour.
+  ok("...while `continue only:` re-enters at the verify gate, as it always did", !h2.spawned.includes("fr-implementer"), h2.spawned.join(", ") || "nothing spawned");
+}
+
 console.log(fails === 0 ? "\nprobe_fr_regression: all pass" : `\nprobe_fr_regression: ${fails} FAILURE(S)`);
 process.exit(fails === 0 ? 0 : 1);

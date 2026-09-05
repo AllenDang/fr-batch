@@ -99,7 +99,7 @@ function repoWithPin(o: RepoOpts = {}): string {
 }
 
 /** `fixer` runs when the fake child completes, and is where each case's behaviour lives. */
-function harness(repo: string, fixer: (round: number) => void) {
+function harness(repo: string, fixer: (round: number) => void, childStatus?: string) {
   const handlers = new Map<string, Set<(d: unknown) => void>>();
   const spawned: string[] = [];
   let n = 0;
@@ -128,7 +128,7 @@ function harness(repo: string, fixer: (round: number) => void) {
         fire(`${RPC_REPLY_PREFIX}${payload.requestId}`, { version: 1, requestId: payload.requestId, success: true, data: { text: "ok", details: { asyncId } } });
         setTimeout(() => {
           if (agent === "fr-bug-fixer") fixer(spawned.filter((a) => a === "fr-bug-fixer").length);
-          fire(ASYNC_COMPLETE, { runId: asyncId, state: "completed", results: [{ status: "complete", summary: "done" }] });
+          fire(ASYNC_COMPLETE, { runId: asyncId, state: "completed", results: [{ status: childStatus ?? "complete", summary: "done" }] });
         }, 3);
       },
     },
@@ -354,6 +354,21 @@ console.log("\n--- requirePin: a fix with no permanent regression test is red");
   });
   const out = await runBounded(h);
   ok("...and an added, still-untracked pin satisfies it", prog(repo).b1?.status === "committed", `${prog(repo).b1?.status} · ${out.split("\n")[0]}`);
+}
+
+{
+  // A bug fixer that RUNS and reports failure must be recorded, not returned bare. Returning the text
+  // alone left the item's status wherever it had been and progress.json with no trace — `status` showed
+  // the item in flight forever and the next run re-entered from the top with nothing to read. The bug
+  // lane could not even express the alternative until its `block` seam stopped dropping two arguments.
+  const repo = repoWithPin();
+  const h = harness(repo, () => {}, "failed");
+  const out = await runBounded(h);
+  const p = prog(repo).b1;
+  ok("the bug fixer's own failure is RECORDED as a block", p?.status === "blocked", `${p?.status} · ${out.split("\n")[0]}`);
+  ok("...scoped `attempt`, so a plain run may re-enter it", p?.blockScope === "attempt", String(p?.blockScope));
+  ok("...naming the phase it stopped in", p?.pausedPhase === "bugfix", String(p?.pausedPhase));
+  ok("...and the note says which child failed", /Bug fixer/.test(p?.note ?? ""), (p?.note ?? "").split("\n")[0]);
 }
 
 console.log(fails === 0 ? "\nprobe_bug_orchestration: all pass" : `\nprobe_bug_orchestration: ${fails} FAILURE(S)`);

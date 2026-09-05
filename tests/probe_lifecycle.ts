@@ -193,6 +193,17 @@ console.log("\n--- L: the lock knows who holds it, by liveness not by age");
   const after = statSync(lp).mtimeMs;
   ok("L8 touchRunlock always moves mtime forward", after > before && Date.now() - after < 5_000, `${Math.round((Date.now() - after) / 1000)}s old after the touch`);
   ok("...and leaves the holder line untouched", readFileSync(lp, "utf8").includes(`pid ${LIVE_PID}`), readFileSync(lp, "utf8").trim());
+  // L8 above goes through utimesSync, so it does not exercise the REWRITE fallback. That path only
+  // runs when utimesSync throws — which some network and container filesystems do where a write
+  // succeeds — and it matters because a live holder that silently stops touching now loses its lock to
+  // the recycled-pid rule. node:fs exports are read-only, so rather than stub the syscall this asserts
+  // the fallback exists and is reachable: it is the LAST statement of touchRunlock, guarded by nothing
+  // but the catch, and it rewrites the bytes it just read.
+  const storeSrc = readFileSync(new URL("../store.ts", import.meta.url), "utf8");
+  const fn = storeSrc.slice(storeSrc.indexOf("export function touchRunlock"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok("...and falls back to a rewrite when utimesSync throws", /catch \{[\s\S]*?writeFileSync\(p, readFileSync\(p, "utf8"\), "utf8"\)/.test(body), body.split("\n").filter((l) => /writeFileSync|utimesSync|catch/.test(l)).join(" | "));
+  ok("...and the happy path returns before it, so the rewrite is not paid twice", /utimesSync\(p, now, now\);\n\s*return;/.test(body));
   if ("release" in recycled) recycled.release();
 
   writeFileSync(lp, `pid ${process.pid} since now\n`, "utf8");
@@ -386,6 +397,12 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   // The child id is NOT retained: it names a process, and a stale one must never be revived.
   setProgress(r, "thing", { status: "blocked", pausedChildId: "run-dead" });
   ok("...but never a stale child id", loadProgress(r).thing?.pausedChildId === undefined, String(loadProgress(r).thing?.pausedChildId));
+  // And the phase has to be VISIBLE, or recording it on five of the six verdict sites buys nothing:
+  // there it changes no routing (re-entry re-runs the verify gate, and must — an item whose gate is not
+  // green cannot be audited), so provenance is its entire value and `status` hid it for blocked items.
+  setProgress(r, "thing", { status: "blocked", note: "audit reached the total round cap", blockScope: "verdict", pausedPhase: "fix-audit" });
+  const blockedStatus = renderStatus(r);
+  ok("B8 status shows a BLOCKED item where it stopped", /at:fix-audit/.test(blockedStatus), blockedStatus.split("\n").find((l) => /thing/.test(l)) ?? "no row");
 }
 {
   // Status has to NAME the budget it enforces. It described the strict-shrink guard for two commits
@@ -425,8 +442,16 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
     .map((f) => [f, readFileSync(new URL(`../${f}`, import.meta.url), "utf8")] as [string, string]);
   const writers = allSrc.flatMap(([f, t]) => t.split("\n").map((l, n) => [f, n + 1, l] as [string, number, string]).filter(([, , l]) => /pauseKind: "stopped"/.test(l)));
   ok("V5 exactly one site in the whole extension writes pauseKind \"stopped\"", writers.length === 1, writers.map(([f, n]) => `${f}:${n}`).join(", ") || "none — status has nothing to classify");
-  ok("...and its label is one of the two status knows", /const label = cause.kind === "stopped" \? "HARD STOPPED" : "TIMED OUT";/.test(src));
-  ok("...written as the note's first line", /note: \[\n\s*`\$\{label\} during \$\{phase\}/.test(src));
+  // These two used to pin the SHAPE of the label expression and the note template, which a rename or a
+  // reflow breaks with behaviour intact — and they were the only guard of the driver -> status note
+  // contract. Replaced by the contract itself, driven end to end: an abandonment's note must begin with
+  // a word `status` can classify, because that prefix is the only thing carrying the cause across.
+  const ac2 = new AbortController();
+  const r2 = repo();
+  await run(fake(r2, { onSpawn: () => ac2.abort() }), { signal: ac2.signal });
+  const note = loadProgress(r2).thing?.note ?? "";
+  ok("...and a real abandonment's note BEGINS with a label status can classify", /^(HARD STOPPED|TIMED OUT) during /.test(note), note.split("\n")[0] || "(empty note)");
+  ok("...which status then reads back as the right kind of pause", /paused by a hard stop/.test(renderStatus(r2)) && !/OUTLIVED/.test(renderStatus(r2)));
 }
 {
   // The four outcome-failure blocks name their phase as a LITERAL, and a wrong literal silently
@@ -465,6 +490,7 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   //   `childLaunchFailure` — it forwards the phase it was handed, as a variable.
   const exempt = [/if \(!gate\.ok\) return block\(gate\.why\)/, /failed to run: \$\{e\.message\}`, "attempt", phase\)/, /git (add|commit) failed/];
   const missing: string[] = [];
+  let seen = 0;
   for (let i = 0; i < lines.length; i++) {
     if (!/\breturn block\(/.test(lines[i])) continue;
     // Scanned to where the call actually CLOSES, by paren depth. A fixed window silently exempted the
@@ -480,12 +506,17 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
       }
       if (depth <= 0) break;
     }
+    seen += 1;
     if (exempt.some((re) => re.test(call))) continue;
     if (!/"(verdict|attempt)",[\s\S]*?"(implement|audit|fix-verify|fix-audit|bugfix|scope)"/.test(call)) {
       missing.push(`driver.ts:${i + 1} ${lines[i].trim().slice(0, 60)}`);
     }
   }
-  ok("B6 every block inside a phase records that phase", missing.length === 0, missing.join(" | ") || "all recorded");
+  // A population count, because the scan itself could break: a regex that stops matching, or a rename,
+  // would leave `missing` empty and the row would pass having examined nothing. That is the shape of
+  // false green this whole row exists to prevent, so it must not be the row's own failure mode.
+  ok("B6 the scan actually found the block call sites", seen >= 12, `${seen} \u00b7 there are 14 in driver.ts, three of them exempt`);
+  ok("...and every block inside a phase records that phase", missing.length === 0, missing.join(" | ") || "all recorded");
 
   // Same off-by-one class, the other family of call sites. B5 checks the four `block` literals; these
   // are the `handlePause` literals, and a phase one behind here resumes a network pause at the wrong
@@ -493,16 +524,20 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   // member of the union typechecks everywhere.
   const phaseOf: Record<string, string> = { "fr-implementer": "implement", "fr-test-auditor": "audit" };
   const wrong: string[] = [];
+  let found = 0;
   for (let i = 0; i < lines.length; i++) {
     const m = /handlePause\("([a-z-]+)"/.exec(lines[i]);
     if (!m) continue;
+    found += 1;
     const spawns = lines.slice(0, i).filter((l) => /agent: "fr-[a-z-]+"/.test(l));
     const agent = (spawns[spawns.length - 1]?.match(/agent: "(fr-[a-z-]+)"/) ?? [])[1] ?? "?";
     // The gap-fixer runs both fix phases, so it constrains the literal to that pair rather than to one.
     const okPhase = agent === "fr-gap-fixer" ? m[1] === "fix-verify" || m[1] === "fix-audit" : phaseOf[agent] === m[1];
     if (!okPhase) wrong.push(`driver.ts:${i + 1} handlePause("${m[1]}") under ${agent}`);
   }
-  ok("B7 every handlePause names the phase its own child is running", wrong.length === 0, wrong.join(" | ") || "all four agree with the child above them");
+  // Same reason as B6: "all four agree" was asserted without ever checking there were four.
+  ok("B7 the scan found every handlePause literal", found === 4, `${found} \u00b7 expected the four phase literals`);
+  ok("...and each names the phase its own child is running", wrong.length === 0, wrong.join(" | ") || "all four agree with the child above them");
 }
 {
   // A verify dispute must be DISTINGUISHABLE in status. Everything else in out-of-scope.md is coverage
