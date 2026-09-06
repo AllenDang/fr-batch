@@ -360,7 +360,7 @@ const MUTATIONS = [
     name: "BUG_PROTOCOL_DEFAULTS hardcodes one project's runner",
     probe: "probe_bug.ts",
     file: "types.ts",
-    mutate: (t) => t.replace('  nameField: "name",', '  run: ["./bin/ange test {fixture}"],\n  nameField: "name",'),
+    mutate: (t) => t.replace('  nameField: "name",', '  run: ["./bin/runner test {fixture}"],\n  nameField: "name",'),
   },
   {
     name: "`results: null` falls through and re-inherits the outer sink",

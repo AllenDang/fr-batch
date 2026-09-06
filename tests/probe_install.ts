@@ -392,7 +392,7 @@ ok("the signature list is a list of regexes", TRANSIENT_SIGNATURES.every((r) => 
   ok("...naming both trees and the one-line fix", /\.pi\b/.test(bare) && /\.pi-subagents/.test(bare) && /gitignore/.test(bare));
   const half = await run(mkRepo("/.pi/\n"));
   ok("a repo ignoring only .pi is still refused", /REFUSED/.test(half) && /\.pi-subagents/.test(half), half.split("\n")[0]);
-  // The dir-only rule `/.pi-subagents/` with the directory absent is EXACTLY ange's .gitignore,
+  // The dir-only rule `/.pi-subagents/` with the directory absent is EXACTLY what a real consumer had,
   // and `git check-ignore .pi-subagents` (no slash) exits 1 there — so the check has to query with
   // one, or it refuses a repo that is correctly configured.
   const dirOnly = mkRepo("/.pi/\n/.pi-subagents/\n");

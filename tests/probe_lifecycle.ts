@@ -550,7 +550,7 @@ console.log("\n--- R: the budget counts barren rounds, not rounds");
   setProgress(r, "thing", { status: "verifying", fixRounds: 1 });
   writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n- a row the contract does not ask for\n", "utf8");
   ok("V4 an ordinary out-of-scope file is tagged, and not escalated", /out-of-scope:yes/.test(renderStatus(r)) && !/VERIFY-DISPUTED/.test(renderStatus(r)));
-  writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n### The project's verify gate disagrees with the PLAN's acceptance text\n\n- `ange_test` asserts 1\n", "utf8");
+  writeFileSync(join(dir, "thing.out-of-scope.md"), "# findings\n\n### The project's verify gate disagrees with the PLAN's acceptance text\n\n- the gate asserts 1\n", "utf8");
   const st = renderStatus(r);
   ok("...while a dispute about the operator's own gate is called out", /VERIFY-DISPUTED/.test(st), st.split("\n").find((l) => /out-of-scope/.test(l)) ?? "no row");
   // The chip is driven by the EXPORTED heading, so writer and reader cannot drift. It used to be the

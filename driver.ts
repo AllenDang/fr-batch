@@ -215,7 +215,7 @@ export async function runBatch(
       // Queried WITH a trailing slash, which is not cosmetic: `git check-ignore .pi-subagents`
       // exits 1 against a `/.pi-subagents/` rule while the directory does not exist yet, because
       // git cannot know a nonexistent path is a directory and a dir-only pattern then cannot
-      // match. Measured on ange, whose .gitignore has exactly that rule. A trailing slash matches
+      // match. Measured on a real consuming repo whose .gitignore has exactly that rule. A trailing slash matches
       // both spellings of the rule (`/.pi` and `/.pi/`), so it is the correct probe in all cases.
       const r = await pi.exec("git", ["check-ignore", "-q", `${p}/`], { cwd });
       if (r.code !== 0) unignored.push(p);

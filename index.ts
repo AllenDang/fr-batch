@@ -55,7 +55,7 @@ import type { Log } from "./types.ts";
 // BOTH HOT FILES ARE SIZED BY WORK IN FLIGHT, NOT BY PROJECT SIZE — that is what action
 // "archive" is for. A repo with hundreds of PLANs that never archives pays for all of them
 // on every single inspection: `status` is one row per item, and progress notes are prose.
-// Measured on this extension's own ange queue: 409 B per queue item and a 354 B note per
+// Measured on a real 27-item batch queue: 409 B per queue item and a 354 B note per
 // progress entry, so 300 items is ~123 KB of queue plus ~106 KB of notes, and a status
 // render of ~300 lines. Archiving keeps the live pair at the size of the open batch and
 // moves the finished record to a file nothing reads on the hot path.

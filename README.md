@@ -55,7 +55,7 @@ Then, in each repo the batch should work on:
 // <repo>/.pi/fr-batch/queue.json   — yours; the driver only reads it
 {
   "armed": false,                  // run refuses while false. Arm it deliberately.
-  "defaultVerify": ["scons", "scons test && bin/ange_test"],   // this repo's own gate
+  "defaultVerify": ["scons", "scons test && bin/project_test"], // the consuming repo's own gate
   "items": [
     { "id": "L0-base", "plan": "docs/FR_base_PLAN.md" }
   ]
@@ -110,7 +110,7 @@ on every state transition and silently clobber your append.
 
 `queue.json` and `progress.json` are on every hot path: the driver re-reads the queue at
 every item boundary, and `status` renders from both. A project with hundreds of PLANs that
-never sweeps pays for all of them on every single look. Measured on ange's own queue: **409 B
+never sweeps pays for all of them on every single look. Measured on a real 27-item queue: **409 B
 per queue item** and a **354 B prose note per progress entry**, so 300 items is ~123 KB of
 queue plus ~106 KB of notes — and, before the summary view, ~300 lines of `status` output per
 inspection, of which at most a handful were actionable.
@@ -479,7 +479,7 @@ on the next iteration with no restart. Two guard rails:
 `queue.json` carries everything repo-specific:
 
 - **`defaultVerify`** — the project's acceptance gate. Take it from the project's
-  own context file rather than inventing one (ANGE: `scons` / `scons test`; a
+  own context file rather than inventing one (one real consumer: `scons` / `scons test`; a
   React Native repo: `npm run lint` / `npx tsc --noEmit` / `npx jest`).
 - **`repoRules`** — optional emphasis appended to every child's task. Use it ONLY
   for a trap the context file already documents but agents keep ignoring: a stale
@@ -728,7 +728,7 @@ So `rpc.ts` no longer trusts the event alone:
 
 ## A PLAN with no test matrix is refused before anything runs
 
-`ange`-style PLANs are graded by their `## Tests` behavior-branch matrix: the implementer is
+PLANs are graded by their `## Tests` behavior-branch matrix: the implementer is
 told to turn every row into a real test, and the auditor may only raise a gap that NAMES a row
 of the frozen contract. A PLAN with no matrix therefore has no test obligation to satisfy and
 an audit gate that passes by vacuity — it would report a green item that was never checked.

@@ -159,7 +159,7 @@ function assertBugProtocol(q: Queue, item: QueueItem): void {
   }
   // The results sink is SUBTRACTED from the immutability set, because the runner rewrites it every
   // pass. Pointing it AT a pin therefore switches that pin's protection off. A sink INSIDE the
-  // fixture directory is normal and fine (ANGE's own sink lives there) — only an exact collision
+  // fixture directory is normal and fine (a real consumer's own sink lives there) — only an exact collision
   // with a pin path is refused, and it is refused here so a queue edit cannot arrange it for a
   // later item either.
   if (p.results !== null) {

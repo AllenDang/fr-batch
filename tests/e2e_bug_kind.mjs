@@ -1,6 +1,7 @@
 // End-to-end validation of fr-batch's kind:"bug" pipeline.
 //
-// Real git repo, real fixture copies from ANGE, a real shell running a real stub runner, and the
+// Real git repo, real fixture copies from a consuming project, a real shell running a real stub
+// runner, and the
 // REAL runBatch. The only fake is the subagent RPC bus — and its completion hook actually edits the
 // tree, so each case can play a different kind of fixer: an honest one, one that launders the pin,
 // one that weakens a control.
@@ -9,8 +10,9 @@
 // deleted the harness mid-run — the fixture repo is reset hard between cases, so nothing untracked
 // may live in it.
 //
-// Nothing here touches ANGE, ANGE_w1 or ANGE_w2. Two of them had live fr-batch drivers when this was
-// written; the fixtures were copied read-only.
+// NOTHING HERE WRITES TO THE PROJECT THE FIXTURES CAME FROM. Two of that project's worktrees had live
+// fr-batch drivers when this was written, so the fixtures were copied read-only and every path this
+// harness touches is either under FR_E2E_REPO or created by it.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
